@@ -1,0 +1,11 @@
+indentation: 2
+function-arrows: leading-args
+indent-wheres: true
+newlines-between-decls: 0
+haddock-style: single-line
+let-style: mixed
+in-style: no-space
+single-constraint-parens: auto
+unicode: detect
+respectful: true
+single-deriving-parens: auto

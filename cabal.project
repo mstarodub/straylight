@@ -1,0 +1,3 @@
+packages: ./*.cabal
+with-compiler: ghc-9.10.1
+minimize-conflict-set: True

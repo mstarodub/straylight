@@ -1,0 +1,85 @@
+cabal-version: 3.4
+name:          straylight
+version:       0.0.1
+author:        Maxim Starodub
+
+common ghc-settings
+    ghc-options:
+        -haddock -Wall -Wcompat -Wredundant-constraints -Wno-type-defaults
+        -Wincomplete-record-updates -Wincomplete-uni-patterns -Widentities
+        -Wno-missing-signatures -Wno-orphans -Wincomplete-record-selectors
+        -Wno-unrecognised-warning-flags -Wno-x-partial
+
+    default-language: Haskell2010
+
+common extensions
+    default-extensions:
+        ApplicativeDo
+        BinaryLiterals
+        BlockArguments
+        ConstrainedClassMethods
+        ConstraintKinds
+        DataKinds
+        DeriveGeneric
+        DeriveTraversable
+        DerivingVia
+        DuplicateRecordFields
+        EmptyCase
+        ExistentialQuantification
+        FlexibleContexts
+        FlexibleInstances
+        FunctionalDependencies
+        GADTs
+        ImpredicativeTypes
+        InstanceSigs
+        KindSignatures
+        LexicalNegation
+        MonadComprehensions
+        MultiParamTypeClasses
+        NamedWildCards
+        NoDatatypeContexts
+        NoFieldSelectors
+        NoStarIsType
+        NumericUnderscores
+        OverloadedLists
+        OverloadedRecordDot
+        OverloadedStrings
+        ParallelListComp
+        PartialTypeSignatures
+        PatternSynonyms
+        PolyKinds
+        PostfixOperators
+        QualifiedDo
+        QuantifiedConstraints
+        RankNTypes
+        RecursiveDo
+        ScopedTypeVariables
+        StandaloneDeriving
+        StandaloneKindSignatures
+        TupleSections
+        TypeApplications
+        TypeFamilies
+        TypeOperators
+        UndecidableInstances
+
+common imports
+    build-depends:
+        , ansi-terminal
+        , base               ^>=4.20.0.0
+        , containers
+        , generic-arbitrary
+        , hspec
+        , megaparsec
+        , mtl
+        , multiset
+        , QuickCheck
+
+executable tst
+    import:         ghc-settings, extensions, imports
+    main-is:        Elab.hs
+    ghc-options:    -main-is Elab
+    hs-source-dirs: src
+    other-modules:
+        Order
+        Tests
+        Unif

@@ -1,0 +1,84 @@
+let id : forall (A : *). A -> A
+      = λA x. x;
+let cnst : forall (A : *) (B:*). A -> B -> A
+      = \A B x y. x;
+
+const Bool : *;
+const t : Bool;
+const f : Bool;
+const Natural : *;
+
+free 0 : Bool -> Natural;
+let boolnat : * = Bool -> Natural;
+
+-- Church natural numbers
+let Nat  : * = forall N:*. (N -> N) -> N -> N;
+let five : Nat = \N s z. s (s (s (s (s z))));
+let add'  : Nat -> Nat -> Nat = \m n f x. m f (n f x);
+let add  : Nat -> Nat -> Nat = \a b N s z. a N s (b N s z);
+let mul  : Nat -> Nat -> Nat = \a b N s z. a N (b N s) z;
+
+let ten      : Nat = add five five;
+let hundred  : Nat = mul ten ten;
+
+-- let eta_expanded : forall (A : *). A -> A = \A x y. y x;
+-- ghci> ab_conv ctx.lvl (get_def ctx "n_") (get_def ctx "n__")
+-- True
+let n_ : (Bool -> Nat) -> (Bool -> Nat) = \y x.y x;
+let n__ : (Bool -> Nat) -> (Bool -> Nat) = \y. y;
+let nftest : boolnat -> (Bool -> Natural) = \y. ?0;
+
+let ttt : (Bool -> Natural) -> (Bool -> Natural) = \y x.y x;
+let ttt' : (Bool -> Natural) -> (Bool -> Natural) = \y. \x. y x;
+
+-- should not typecheck
+-- let cnst_wrong : forall (A : *) (B:*). A -> A -> B = \A B x y. x;
+-- let cnst_wrong_ : forall (A : *) (B:*). B -> A -> A = \A B x y. x;
+
+-- example 2
+-- ghci> pp_substitutions ctx $ xx !! 0
+-- "       ?0 : Bool -> Natural -- User
+--         ?1 : A -> C -- Substituted λ x. ?3 x (?4 x)
+--         ?2 : B -> C -- Substituted λ x. ?3 (?5 x) x
+--         ?3 : A -> B -> C -- Ident
+--         ?4 : A -> B -- Substituted λ x. b
+--         ?5 : B -> A -- Substituted λ x. a
+-- "
+-- ghci> xx = get_n_unif 39 ctx (Uc (get_const_def_partial ctx "left", get_const_def_partial ctx "right"))
+-- TODO:works, but first 39 seem similar and 40/ident loops
+-- -> clarify whether success leaves have to be different substitutions
+const A : *;
+const B : *;
+const C : *;
+const a : A;
+const b : B;
+const h : C -> C;
+free 1 : A -> C; -- F
+free 2 : B -> C; -- G
+let left : C = hundred C h (?1 a);
+let right : C = hundred C h (?2 b);
+
+-- example 1
+free 3 : C;
+let left' : C = ?3;
+let right' : C = h ?3;
+
+-- iter example from Bentkamp:
+-- F (\x. x) (f a) = F f a
+free 4 : (A -> A) -> A -> A;
+const f'' : A -> A;
+let left'' : A = ?4 (\x. x) (f'' a);
+let right'' : A = ?4 f'' a;
+-- mit unifier F |-> \u v. u v
+-- Iteration: F |-> \u v. H u v (u (G u v))
+-- Elimination: H |-> \x y z. H' z
+-- Decompose
+-- Huet proj: G |-> \u v. v
+
+-- encoding check (O(j) should just be f)
+const h' : C -> C;
+let j : C -> C = λx. h' x;
+let j' : Nat = add ten five;
+
+-- const Bool : *;
+-- const Natural : *;
