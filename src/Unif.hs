@@ -410,8 +410,7 @@ iter_bind prop ctx f =
                 deltas_to_b2 = foldr construct_arr_val beta2 deltas
                 hty = foldr construct_arr_val beta1 (f_alphas <> [deltas_to_b2])
               in
-                -- TODO/possible bug: why is ctx getting used here?
-                (Free (Metavar mh), ctx{metactx = IntMap.insert mh (hty, Fresh Other) ctx.metactx})
+                (Free (Metavar mh), ctx'{metactx = IntMap.insert mh (hty, Fresh Other) ctx'.metactx})
             gen_gj_apps = gen_apps m (\j -> mk_pi (a_gammas !! j) (f_alphas <> deltas)) (n + d)
 
 construct_arr_val :: Value -> Value -> Value
