@@ -20,12 +20,6 @@ import Elab
 -- of being unstable under η-long substitutions, and would actually make the calculus complete [source: private
 -- communication with Bentkamp]
 
--- TODO: delete these
-instance Eq Value where
-  (==) = undefined
-instance Ord Value where
-  compare = undefined
-
 -- first-order values. flattened
 data FOFTerm
   = FOFMeta Metavar

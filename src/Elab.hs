@@ -230,9 +230,7 @@ force ctx (VFlex m sp)
       force ctx (value_app_spine v sp)
 force _ v = v
 
--- TODO: this seems unneeded. the original idea was that we would have to use deep_force
--- during multiset manipulation, since the equality it uses is up to conversion, so we have to make sure
--- with anything that inserts (MultiSet.instert, MultiSet.fromList) to only insert normalized values
+-- TODO: this seems unneeded
 deep_force :: ElabCtx -> Value -> Value
 deep_force ctx (VFlex m sp)
   | Substituted v <- get_free_status_partial ctx m = deep_force ctx (value_app_spine v sp)

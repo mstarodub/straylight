@@ -6,12 +6,11 @@ import Control.Monad.State
 import Data.Bifunctor
 import Data.Foldable
 import qualified Data.IntMap as IntMap
+import qualified Data.List as List
 import Data.Maybe
-import Data.MultiSet (MultiSet)
-import qualified Data.MultiSet as MultiSet
 import Data.Semigroup
 import Debug.Trace
-import qualified GHC.Exts (IsList, Item, fromList, toList)
+import qualified GHC.Exts (IsList)
 
 import Elab
 import Order ()
@@ -22,11 +21,6 @@ import Order ()
 uf_trace :: ElabCtx -> [String] -> a -> a
 uf_trace ctx ss x =
   if True then trace ("TRACE " <> show ctx.dbg_unif <> " " <> unwords ss) x else x
-
-instance (Ord a) => GHC.Exts.IsList (MultiSet a) where
-  type Item (MultiSet a) = a
-  fromList = MultiSet.fromList
-  toList = MultiSet.toList
 
 newtype Stream a = Stream [a]
   deriving (GHC.Exts.IsList) via [a]
@@ -53,31 +47,29 @@ instance Monoid (Stream a) where
 -- invariant: both sides have the same type
 
 -- TODO: we use non-syntactic value equality/abe_conv in several places during unification:
---   1. in bind operations to check type equality (fine until we have dependent types...)?
---   2. for the delete transition. there, it seems fine to delete eagerly, since all that does is skip norm_a / decompose
-
--- reuse the value order for the unif constraints multiset.
--- hashing does not work since the hash function would be up to normalized terms,
--- as the only way to get Eq on values is to use abe_conv, but the unif constraints
--- would not necessarily be normalized.
--- the best data structure to represent sets would be a discrimination tree.
-newtype UnifConstraint = Uc (Value, Value) deriving (Ord) via (Value, Value)
-
--- using abe_conv as the equality check poses no problems for the unification constraints:
--- syntactically equal values, which is what we actually want there:
+-- 1. in bind operations to check type equality (fine until we have dependent types...)?
+-- 2. for the delete transition. there, it seems fine to delete eagerly, since all that does is skip norm_a / decompose
+-- 3. for the unification constraints: syntactically equal values, which is what we actually want there:
 --   have to normalize to the same thing
 --   but syntactically nonequal values that are repeatedly reduced to hnf only normalize to the same thing
 --   when a larger metacontext is used for conversion (which is never the case)
--- so it is indeed acceptable to use abe_conv.
--- TODO: switch to lists
--- TODO: re-check the constraints on each binding!
-newtype UnifConstraints = Ucs (MultiSet UnifConstraint)
 
--- unoriented syntactic equality for constraints
+-- TODO: re-check the constraints on each binding!
+
+newtype UnifConstraint = Uc (Value, Value)
+
+-- a set would be nice, but hashing does not work:
+-- since the hash function would be up to normalized terms, as the only way to get Eq on values is to use abe_conv,
+-- but the unif constraints would not necessarily be normalized.
+-- Ord is not an option either since we have no total order on hoas values
+-- in general, the best data structure to represent sets of values would be a discrimination tree.
+newtype UnifConstraints = Ucs [UnifConstraint]
+
+-- unoriented equality for constraints
 instance Eq UnifConstraint where
   Uc (c1, c2) == Uc (d1, d2) =
-    (c1 == d1 && c2 == d2)
-      || (c1 == d2 && c2 == d1)
+    c1 `abe_conv` d1 && c2 `abe_conv` d2
+      || c1 `abe_conv` d2 && c2 `abe_conv` d1
 
 show_uc :: ElabCtx -> UnifConstraint -> String
 show_uc ctx (Uc (v1, v2)) = show_val ctx v1 <> " ?= " <> show_val ctx v2
@@ -112,7 +104,7 @@ unifstep (Stream (Right (Ucs [], ctx) : tree)) = [Left $ Unifier ctx] <> unifste
 unifstep (Stream (Right (Ucs ucs, ctx) : tree)) = foldMap f ucs <> unifstep (Stream tree)
   where
     f :: UnifConstraint -> Stream UnifNode
-    f selected = transition (Ucs $ selected `MultiSet.delete` ucs, ctx) selected
+    f selected = transition (Ucs $ selected `List.delete` ucs, ctx) selected
 -- prune failures
 unifstep (Stream (Left Deadend : tree)) = unifstep $ Stream tree
 -- preserve successes
@@ -137,16 +129,17 @@ transition (Ucs e, ctx) c =
             let
               decomp = case decomp_possible s t of
                 Just (sp1, sp2) ->
-                  let new_decomposed = MultiSet.fromList . fmap Uc $ zip (toList sp1) (toList sp2)
+                  let new_decomposed = fmap Uc $ zip (toList sp1) (toList sp2)
                   in [ Right
-                        ( Ucs $ e `MultiSet.union` new_decomposed
+                        -- TODO: investigate using List.union instead
+                        ( Ucs $ e <> new_decomposed
                         , ctx{dbg_unif = second (const "decomp") (dbg_incdepth ctx).dbg_unif}
                         )
                      ]
                 Nothing -> []
               bind =
                 fmap
-                  (\ct -> Right (Ucs (Uc (s, t) `MultiSet.insert` e), ct))
+                  (\ct -> Right (Ucs (Uc (s, t) : e), ct))
                   (param (dbg_incdepth ctx) (Uc (s, t)))
             in
               let Stream decomp_bind = decomp <> bind

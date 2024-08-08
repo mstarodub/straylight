@@ -71,7 +71,6 @@ common imports
         , hspec
         , megaparsec
         , mtl
-        , multiset
         , QuickCheck
 
 executable tst
