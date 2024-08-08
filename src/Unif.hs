@@ -66,10 +66,11 @@ newtype UnifConstraint = Uc (Value, Value)
 newtype UnifConstraints = Ucs [UnifConstraint]
 
 -- unoriented equality for constraints
-instance Eq UnifConstraint where
-  Uc (c1, c2) == Uc (d1, d2) =
-    c1 `abe_conv` d1 && c2 `abe_conv` d2
-      || c1 `abe_conv` d2 && c2 `abe_conv` d1
+eq_uc :: ElabCtx -> UnifConstraint -> UnifConstraint -> Bool
+eq_uc ctx (Uc (c1, c2)) (Uc (d1, d2)) =
+  let cmp = abe_conv ctx
+  in c1 `cmp` d1 && c2 `cmp` d2
+      || c1 `cmp` d2 && c2 `cmp` d1
 
 show_uc :: ElabCtx -> UnifConstraint -> String
 show_uc ctx (Uc (v1, v2)) = show_val ctx v1 <> " ?= " <> show_val ctx v2
@@ -104,7 +105,9 @@ unifstep (Stream (Right (Ucs [], ctx) : tree)) = [Left $ Unifier ctx] <> unifste
 unifstep (Stream (Right (Ucs ucs, ctx) : tree)) = foldMap f ucs <> unifstep (Stream tree)
   where
     f :: UnifConstraint -> Stream UnifNode
-    f selected = transition (Ucs $ selected `List.delete` ucs, ctx) selected
+    f selected = transition (Ucs $ selected `delete_uc` ucs, ctx) selected
+    delete_uc :: UnifConstraint -> [UnifConstraint] -> [UnifConstraint]
+    delete_uc = List.deleteBy (eq_uc ctx)
 -- prune failures
 unifstep (Stream (Left Deadend : tree)) = unifstep $ Stream tree
 -- preserve successes
@@ -114,15 +117,15 @@ unifstep (Stream (leafunif : tree)) = [leafunif] <> unifstep (Stream tree)
 transition :: NodeState -> UnifConstraint -> Stream UnifNode
 -- normalize_b + dereference
 transition (Ucs e, ctx) c =
-  let Uc (sel1, sel2) = strip_abstr ctx.lvl c
+  let Uc (sel1, sel2) = strip_abstr ctx c
   in go $ Uc (force ctx sel1, force ctx sel2)
   where
     go :: UnifConstraint -> Stream UnifNode
     -- fail
-    go (Uc (VRigid a _, VRigid b _)) | a /= b = uf_trace ctx ["rule fail"] $ [Left Deadend]
+    go (Uc (VRigid a _ _, VRigid b _ _)) | a /= b = uf_trace ctx ["rule fail"] $ [Left Deadend]
     go (Uc (s, t))
       -- delete
-      | s `abe_conv` t = uf_trace ctx ["rule delete", show_uc ctx $ Uc (s, t)] $ [Right (Ucs e, dbg_incdepth ctx)]
+      | abe_conv ctx s t = uf_trace ctx ["rule delete", show_uc ctx $ Uc (s, t)] $ [Right (Ucs e, dbg_incdepth ctx)]
       -- decompose + bind
       | otherwise =
           uf_trace ctx ["rule decomp/bind", show_uc ctx $ Uc (s, t), show ctx] $
@@ -131,7 +134,7 @@ transition (Ucs e, ctx) c =
                 Just (sp1, sp2) ->
                   let new_decomposed = fmap Uc $ zip (toList sp1) (toList sp2)
                   in [ Right
-                        -- TODO: investigate using List.union instead
+                        -- TODO: investigate using a List.union instead, effectively making this an EqSet
                         ( Ucs $ e <> new_decomposed
                         , ctx{dbg_unif = second (const "decomp") (dbg_incdepth ctx).dbg_unif}
                         )
@@ -149,10 +152,11 @@ transition (Ucs e, ctx) c =
     -- TODO: also useful for restricting "fuel" (to be implemented)
     dbg_incdepth :: ElabCtx -> ElabCtx
     dbg_incdepth ct = ct{dbg_unif = first (+ 1) ct.dbg_unif}
+    -- we could check the precondition (equality of the types) here for debugging
     decomp_possible :: Value -> Value -> Maybe (Spine, Spine)
-    decomp_possible (VRigid h1 s1) (VRigid h2 s2) =
+    decomp_possible (VRigid h1 s1 _) (VRigid h2 s2 _) =
       guard (h1 == h2 && length s1 == length s2) >> pure (s1, s2)
-    decomp_possible (VFlex h1 s1) (VFlex h2 s2) =
+    decomp_possible (VFlex h1 s1 _) (VFlex h2 s2 _) =
       guard (h1 == h2 && length s1 == length s2) >> pure (s1, s2)
     decomp_possible _ _ = Nothing
 
@@ -161,21 +165,21 @@ param = param_complete
 
 param_complete :: ElabCtx -> UnifConstraint -> Stream ElabCtx
 param_complete ctx c = case c of
-  Uc (VRigid _ _, VRigid _ _) -> []
-  Uc (VFlex f _, VRigid a _) ->
+  Uc (VRigid _ _ _, VRigid _ _ _) -> []
+  Uc (VFlex f _ _, VRigid a _ _) ->
     uf_trace ctx ["flex/rigid"] $
       let im = case a of
             Left _ -> []
             Right g -> [imit_bind ctx f g]
       in im <> (subst_unless ctx f Ident $ huet_bind ctx f)
-  Uc (VRigid g sp1, VFlex f sp2) ->
-    param_complete ctx (Uc (VFlex f sp2, VRigid g sp1))
-  Uc (VFlex f1 _, VFlex f2 _)
+  Uc (VRigid g sp1 x1, VFlex f sp2 x2) ->
+    param_complete ctx (Uc (VFlex f sp2 x2, VRigid g sp1 x1))
+  Uc (VFlex f1 _ _, VFlex f2 _ _)
     | f1 == f2 ->
         uf_trace ctx ["flex/flex, same head"] $
           subst_unless ctx f1 Elim $
             (iter_bind is_fun_ty ctx f1) <> (elim_bind ctx f1)
-  Uc (VFlex f1 _, VFlex f2 _)
+  Uc (VFlex f1 _ _, VFlex f2 _ _)
     | otherwise ->
         uf_trace ctx ["flex/flex, diff head"] $
           sconcat
@@ -189,27 +193,28 @@ param_complete ctx c = case c of
 
 param_pragmatic :: ElabCtx -> UnifConstraint -> Stream ElabCtx
 param_pragmatic ctx c = case c of
-  Uc (VRigid _ _, VRigid _ _) -> []
-  Uc (VFlex f _, VRigid a _) ->
+  Uc (VRigid _ _ _, VRigid _ _ _) -> []
+  Uc (VFlex f _ _, VRigid a _ _) ->
     let im = case a of
           Left _ -> []
           Right g -> [imit_bind ctx f g]
     in im <> (subst_unless ctx f Ident $ huet_bind ctx f)
-  Uc (VRigid g sp1, VFlex f sp2) ->
-    param_complete ctx (Uc (VFlex f sp2, VRigid g sp1))
-  Uc (VFlex f1 _, VFlex f2 _)
+  Uc (VRigid g sp1 x1, VFlex f sp2 x2) ->
+    param_complete ctx (Uc (VFlex f sp2 x2, VRigid g sp1 x1))
+  Uc (VFlex f1 _ _, VFlex f2 _ _)
     | f1 == f2 -> subst_unless ctx f1 Elim $ elim_bind ctx f1
     | otherwise -> [ident_bind ctx f1 f2] <> (subst_unless ctx f1 Ident $ huet_bind ctx f1)
   Uc (_, _) -> []
 
 -- the abstractions have to be the same for all unification transitions
 -- except for normalize_ae, which we get for free with values - so get rid of them
--- TODO: doesn't really need the level, can always start with 0
-strip_abstr :: Lvl -> UnifConstraint -> UnifConstraint
-strip_abstr l (Uc (VLam _ b1, VLam _ b2)) = strip_abstr (l + 1) $ Uc (b1 $ VBound l, b2 $ VBound l)
-strip_abstr l (Uc ((VLam _ b), v)) = strip_abstr (l + 1) $ Uc (b $ VBound l, v `value_app` VBound l)
-strip_abstr l (Uc (v, (VLam _ b))) = strip_abstr (l + 1) $ Uc (v `value_app` VBound l, b $ VBound l)
-strip_abstr _ (Uc (v1, v2)) = Uc (v1, v2)
+strip_abstr :: ElabCtx -> UnifConstraint -> UnifConstraint
+strip_abstr ctx = go ctx.lvl
+  where
+    go l (Uc (VLam _ a b1, VLam _ _ b2)) = go (l + 1) $ Uc (b1 $ VBound l a, b2 $ VBound l a)
+    go l (Uc ((VLam _ a b), v)) = go (l + 1) $ Uc (b $ VBound l a, value_app ctx v $ VBound l a)
+    go l (Uc (v, (VLam _ a b))) = go (l + 1) $ Uc (value_app ctx v $ VBound l a, b $ VBound l a)
+    go _ (Uc (v1, v2)) = Uc (v1, v2)
 
 subst_unless :: ElabCtx -> Metavar -> EmergedFrom -> Stream ElabCtx -> Stream ElabCtx
 subst_unless ctx m exclude res = case get_free_status_partial ctx m of
@@ -223,8 +228,6 @@ subst_unless ctx m exclude res = case get_free_status_partial ctx m of
 subseqs :: [a] -> [[a]]
 subseqs = drop 1 . filterM (const [True, False])
 
--- TODO: all of these should be constructed as raw terms and made to terms by check, guarantees well-typedness
-
 -- given a metavariable to substitute, its type, the term value it should be substituted by,
 -- and the context it should be substituted in - return the new context containing the substitution
 -- second to last arg is for debug printing
@@ -235,10 +238,14 @@ modif_metactx (Metavar m) mty replacee dbg_lastbind ctx =
     , dbg_unif = second (const dbg_lastbind) ctx.dbg_unif
     }
 
--- TODO: print xₙ to examine id fail
+-- TODO: the "x" is just for debug printing
+-- TODO: this should really construct values so we don't have to quote then eval unnecessarily,
+--   but that requires merging this with gen_apps and more thought
 -- construct nabs lambda abstractions around a spine of applications body_1 ... body_n base
-mk_lam :: Term -> [Term] -> Int -> Term
-mk_lam base body nabs = iterate (Lam "x") (foldl (:@) base body) !! nabs
+
+-- mk_lam :: Term -> [Term] -> Int -> Term
+mk_lam :: ElabCtx -> Term -> [Term] -> [Value] -> Term
+mk_lam ctx base body ntys = foldl (\b ty -> ALam "x" (quote ctx ty) b) (foldl (:@) base body) ntys
 
 -- construct the type tys_1 -> ... -> tys_n -> base
 mk_pi :: Value -> [Value] -> Value
@@ -266,8 +273,8 @@ ident_bind ctx f g =
     modif_metactx g g_ty g_replaceby "ident" $
       modif_metactx f f_ty f_replaceby "ident" newctx
   where
-    f_replaceby = mk_lam h (xns <> fi_apps) n
-    g_replaceby = mk_lam h (gi_apps <> yms) m
+    f_replaceby = mk_lam ctx h (xns <> fi_apps) f_alphas
+    g_replaceby = mk_lam ctx h (gi_apps <> yms) g_gammas
     ((fi_apps, gi_apps), newctx) = runState (liftM2 (,) gen_fi_apps gen_gj_apps) ctx'
     (h, ctx') =
       let
@@ -276,9 +283,9 @@ ident_bind ctx f g =
       in
         (Free (Metavar mh), ctx{metactx = IntMap.insert mh (hty, Fresh Ident) ctx.metactx})
     (f_ty, g_ty) = (get_free_ty_partial ctx f, get_free_ty_partial ctx g)
-    f_tys = destruct_arr_val ctx f_ty
-    g_tys = destruct_arr_val ctx g_ty
-    (f_alphas, g_gammas) = assert (last f_tys `abe_conv` last g_tys) $ (init f_tys, init g_tys)
+    f_tys = destruct_arr_val f_ty
+    g_tys = destruct_arr_val g_ty
+    (f_alphas, g_gammas) = assert (abe_conv ctx (last f_tys) (last g_tys)) $ (init f_tys, init g_tys)
     beta = last f_tys
     n = length f_alphas
     m = length g_gammas
@@ -294,12 +301,12 @@ imit_bind ctx f g =
   uf_trace ctx ["bind imit"] $
     modif_metactx f f_ty f_replaceby "imit" newctx
   where
-    f_replaceby = mk_lam (Const g) fi_apps n
+    f_replaceby = mk_lam ctx (Const g) fi_apps f_alphas
     (fi_apps, newctx) = runState gen_fi_apps ctx
     (f_ty, g_ty) = (get_free_ty_partial ctx f, get_const_ty_partial ctx g)
-    f_tys = destruct_arr_val ctx f_ty
-    g_tys = destruct_arr_val ctx g_ty
-    (f_alphas, g_gammas) = assert (last f_tys `abe_conv` last g_tys) (init f_tys, init g_tys)
+    f_tys = destruct_arr_val f_ty
+    g_tys = destruct_arr_val g_ty
+    (f_alphas, g_gammas) = assert (abe_conv ctx (last f_tys) (last g_tys)) (init f_tys, init g_tys)
     n = length f_alphas
     m = length g_gammas
     gen_fi_apps = gen_apps m (\i -> mk_pi (g_gammas !! i) f_alphas) n
@@ -310,14 +317,14 @@ elim_bind ctx f =
     Stream (fmap modif_for_subseq (subseqs [0 .. n - 1]))
   where
     f_ty = get_free_ty_partial ctx f
-    f_tys = destruct_arr_val ctx f_ty
+    f_tys = destruct_arr_val f_ty
     f_alphas = assert (not . null . init $ f_tys) $ init f_tys
     beta = last f_tys
     n = length f_alphas
     modif_for_subseq :: [Int] -> ElabCtx
     modif_for_subseq subs = modif_metactx f f_ty f_replaceby "elim" newctx
       where
-        f_replaceby = mk_lam g xjs n
+        f_replaceby = mk_lam ctx g xjs f_alphas
         xjs = fmap (Bound . Idx) subs
         (g, newctx) =
           let
@@ -330,20 +337,20 @@ huet_jp_bind :: (Value -> Bool) -> ElabCtx -> Metavar -> Stream ElabCtx
 huet_jp_bind prop ctx f = Stream . catMaybes $ fmap modif_for_selected (zip [0 ..] (filter prop f_alphas))
   where
     f_ty = get_free_ty_partial ctx f
-    f_tys = destruct_arr_val ctx f_ty
+    f_tys = destruct_arr_val f_ty
     f_alphas = assert (not . null . init $ f_tys) $ init f_tys
     beta = last f_tys
     n = length f_alphas
     modif_for_selected :: (Int, Value) -> Maybe ElabCtx
     modif_for_selected (ai_idx, ai) =
-      if beta `abe_conv` last a_tys
+      if abe_conv ctx beta (last a_tys)
         then Just (modif_metactx f f_ty f_replaceby "huet/jp" newctx)
         else Nothing
       where
-        f_replaceby = mk_lam xi fi_apps n
+        f_replaceby = mk_lam ctx xi fi_apps f_alphas
         xi = Bound . Idx $ n - 1 - ai_idx
         (fi_apps, newctx) = runState gen_fi_apps ctx
-        a_tys = destruct_arr_val ctx ai
+        a_tys = destruct_arr_val ai
         a_gammas = init a_tys
         m = length a_gammas
         gen_fi_apps = gen_apps m (\i -> mk_pi (a_gammas !! i) f_alphas) n
@@ -373,7 +380,7 @@ iter_bind prop ctx f =
     modif_for_d_abstractions d = Stream $ fmap modif_for_selected (zip [0 ..] (filter prop f_alphas))
       where
         f_ty = get_free_ty_partial ctx f
-        f_tys = destruct_arr_val ctx f_ty
+        f_tys = destruct_arr_val f_ty
         f_alphas = assert (not . null . init $ f_tys) $ init f_tys
         beta1 = last f_tys
         n = length f_alphas
@@ -385,15 +392,15 @@ iter_bind prop ctx f =
           let Metavar nm = fresh_meta ct
           let mty = VSort Star
           put $ ctx{metactx = IntMap.insert nm (mty, Fresh Dummy) ctx.metactx}
-          pure $ VFree (Metavar nm)
+          pure $ VFree (Metavar nm) mty
         modif_for_selected :: (Int, Value) -> ElabCtx
         modif_for_selected (ai_idx, ai) = modif_metactx f f_ty f_replaceby "iter" newctx
           where
-            f_replaceby = mk_lam h (xns <> [iter_lam_gis]) n
+            f_replaceby = mk_lam ctx h (xns <> [iter_lam_gis]) f_alphas
             (gi_apps, newctx) = runState gen_gj_apps ctx''
-            iter_lam_gis = mk_lam xi gi_apps d
+            iter_lam_gis = mk_lam ctx' xi gi_apps deltas
             xi = Bound . Idx $ n - 1 - ai_idx
-            a_tys = destruct_arr_val ctx ai
+            a_tys = destruct_arr_val ai
             a_gammas = init a_tys
             beta2 = last a_tys
             m = length a_gammas
@@ -403,6 +410,7 @@ iter_bind prop ctx f =
                 deltas_to_b2 = foldr construct_arr_val beta2 deltas
                 hty = foldr construct_arr_val beta1 (f_alphas <> [deltas_to_b2])
               in
+                -- TODO/possible bug: why is ctx getting used here?
                 (Free (Metavar mh), ctx{metactx = IntMap.insert mh (hty, Fresh Other) ctx.metactx})
             gen_gj_apps = gen_apps m (\j -> mk_pi (a_gammas !! j) (f_alphas <> deltas)) (n + d)
 
@@ -415,8 +423,6 @@ construct_arr_val l r = VPi "" l (const r)
 -- ghci> get_const_ty_partial ctx "add'"
 -- VPi "" (VPi "N" (VSort □) <function>) <function>
 -- TODO: what about parametric polymorphism, does the fact that "everything is fully applied" gurantee this is ok?
-destruct_arr_val :: ElabCtx -> Value -> [Value]
-destruct_arr_val ctx (VPi _ l r) = l : destruct_arr_val ctx (r $ dummy_val)
-  where
-    dummy_val = VFree $ fresh_meta ctx
-destruct_arr_val _ v = [v]
+destruct_arr_val :: Value -> [Value]
+destruct_arr_val (VPi _ l r) = l : destruct_arr_val (r $ dummy_conv_val_unsafe)
+destruct_arr_val v = [v]

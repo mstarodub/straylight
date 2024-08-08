@@ -1,4 +1,4 @@
-module Order where -- (o, o_nonreducing, kbo) where
+module Order where
 
 import Data.Map (Map)
 import qualified Data.Map as Map (empty, insertWith, map, unionWith)
@@ -115,9 +115,8 @@ free_occurencies = go Map.empty
 μ :: Natural
 μ = 1
 
--- TODO: encode types
 -- encoding could be done lazily with get_args if we had a first-order representation
--- we have no context here. so only forced terms may be compared!
+-- TODO: for now, only forced terms may be compared - is this what we want?
 o :: Value -> FOFTerm
 o = mk_fof . go . eta_reduce . quote_0_nonforcing
   where
@@ -133,8 +132,9 @@ o = mk_fof . go . eta_reduce . quote_0_nonforcing
     -- go l (VRigid (Left x) sp) = VRigid (Left . coerce $ lvl2idx l x) $ fmap (go (l + 1)) sp
     -- go l (VRigid (Right n) sp) = VRigid (Right n) $ fmap (go (l + 1)) sp
     -- go _ v = v
+    -- TODO: this is insufficiently recursive
     go :: Term -> Term
-    go (Lam _ b) = olam :@ b
+    go (ALam _ a b) = olam :@ a :@ b
     go (Pi _ a b) = opi :@ a :@ b
     go (t1 :@ t2) = go t1 :@ go t2
     go t = t

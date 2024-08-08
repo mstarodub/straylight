@@ -67,11 +67,10 @@ data Term
   = Const Name -- type constructors + term constants
   | Free Metavar -- free variables (type known)
   | Bound Idx -- debrujin index
-  | Lam Name Term
   | Pi Name Term Term
   | Term :@ Term -- application
   | Sort Sorts
-  | ALam Name Term Term -- type annotated lambda. used during encoding
+  | ALam Name Term Term
 
 pattern (:->) :: Term -> Term -> Term
 pattern a :-> b = Pi "" a b
@@ -80,21 +79,21 @@ infixr 1 :->
 type Spine = Seq Value
 
 data Value
-  = VFlex Metavar Spine
-  | VRigid (Either Lvl Name) Spine
-  | VLam Name (Value -> Value)
+  = VFlex Metavar Spine Value
+  | VRigid (Either Lvl Name) Spine Value
+  | VLam Name Value (Value -> Value)
   | VPi Name Value (Value -> Value)
   | VSort Sorts
   deriving (Show)
 
-pattern VBound :: Lvl -> Value
-pattern VBound x = VRigid (Left x) []
+pattern VBound :: Lvl -> Value -> Value
+pattern VBound x a = VRigid (Left x) [] a
 
 -- proxy value (for a constant)
-pattern VConst :: Name -> Value
-pattern VConst x = VRigid (Right x) []
-pattern VFree :: Metavar -> Value
-pattern VFree m = VFlex m []
+pattern VConst :: Name -> Value -> Value
+pattern VConst x a = VRigid (Right x) [] a
+pattern VFree :: Metavar -> Value -> Value
+pattern VFree m a = VFlex m [] a
 
 newtype Ctx a = Ctx [(Name, a)]
   deriving (IsList, Semigroup, Monoid, Show) via [(Name, a)]
@@ -107,11 +106,10 @@ instance Eq Term where
   Const c1 == Const c2 = c1 == c2
   Free v1 == Free v2 = v1 == v2
   Bound i1 == Bound i2 = i1 == i2
-  Lam _ b1 == Lam _ b2 = b1 == b2
+  ALam _ t1 b1 == ALam _ t2 b2 = t1 == t2 && b1 == b2
   Pi _ t1 t1' == Pi _ t2 t2' = t1 == t2 && t1' == t2'
   e1 :@ e1' == e2 :@ e2' = e1 == e2 && e1' == e2'
   Sort s1 == Sort s2 = s1 == s2
-  ALam _ t1 b1 == ALam _ t2 b2 = t1 == t2 && b1 == b2
   _ == _ = False
 
 lookup_ctx :: Ctx a -> Name -> Either String a
@@ -146,8 +144,10 @@ data MetaStatus = Substituted Value | Fresh EmergedFrom
 
 type Substitutions = IntMap (Value, MetaStatus)
 
--- env contains (name, (value, type)) for consts, vars (free and bound)
--- invariant: length (= lvl). "zipped"
+-- tenv is the typing context for bound variables, name-keyed (names come from raw terms)
+-- lenv contains values (for eval)
+-- toplvl stores (values,types) for let definitions
+-- invariant: length (= lvl). "unzipped"
 -- metactx stores types of free vars and their substitution state
 -- unification debug info is (tree depth, "last bind op")
 data ElabCtx = ElabCtx
@@ -165,7 +165,7 @@ bind_var :: ElabCtx -> (Name, Value) -> ElabCtx
 bind_var ctx (s, ty) =
   ctx
     { tenv = extend_ctx (s, ty) ctx.tenv
-    , lenv = VBound ctx.lvl : ctx.lenv
+    , lenv = VBound ctx.lvl ty : ctx.lenv
     , lvl = ctx.lvl + 1
     }
 
@@ -173,7 +173,7 @@ bind_var ctx (s, ty) =
 define_const :: ElabCtx -> (Name, Value) -> ElabCtx
 define_const ctx (s, ty) =
   ctx
-    { toplvl = extend_ctx (s, (VConst s, ty)) ctx.toplvl
+    { toplvl = extend_ctx (s, (VConst s ty, ty)) ctx.toplvl
     }
 
 -- extend toplevel with a constant
@@ -199,11 +199,11 @@ get_const_def_partial ctx n = fst $ lookup_ctx_partial ctx.toplvl n
 get_const_ty_partial :: ElabCtx -> Name -> Value
 get_const_ty_partial ctx n = snd $ lookup_ctx_partial ctx.toplvl n
 
+-- TODO: not needed? actually maybe it is during eval
 get_free_ty :: ElabCtx -> Metavar -> Either String Value
 get_free_ty ctx (Metavar m) = case fst <$> ctx.metactx IntMap.!? m of
   Just v -> pure v
   Nothing -> throwError $ "cannot find type for free variable  ?" <> show m
-
 get_free_ty_partial :: ElabCtx -> Metavar -> Value
 get_free_ty_partial ctx (Metavar m) = fst $ ctx.metactx IntMap.! m
 
@@ -217,52 +217,56 @@ fresh_meta ctx = Metavar $ maybe 0 ((+ 1) . fst) (IntMap.lookupMax ctx.metactx)
 
 get_arity :: Value -> Natural
 get_arity (VPi _ _ b) = 1 + get_arity (b dummy_conv_val_unsafe)
-  where
-    dummy_conv_val_unsafe = VBound (-1)
 get_arity _ = 0
+
+dummy_conv_val_unsafe :: Value
+dummy_conv_val_unsafe = VBound (-1) (VSort Box)
 
 -- force a thunk after a substitution up to hnf. cannot pattern match on values otherwise
 -- TODO: during forcing and in eval - do we delete the substituted meta from the ctx and return a new one?
 force :: ElabCtx -> Value -> Value
-force ctx (VFlex m sp)
+force ctx (VFlex m sp _)
   | Substituted v <- get_free_status_partial ctx m =
       --       trace ("forcing " <> show_val ctx (VFlex m sp)) $
-      force ctx (value_app_spine v sp)
+      force ctx (value_app_spine ctx v sp)
 force _ v = v
 
--- TODO: this seems unneeded
 deep_force :: ElabCtx -> Value -> Value
-deep_force ctx (VFlex m sp)
-  | Substituted v <- get_free_status_partial ctx m = deep_force ctx (value_app_spine v sp)
-deep_force ctx (VRigid r sp) = VRigid r $ fmap (deep_force ctx) sp
-deep_force ctx (VLam s vb) = VLam s $ deep_force ctx . vb
+deep_force ctx (VFlex m sp _)
+  | Substituted v <- get_free_status_partial ctx m = deep_force ctx (value_app_spine ctx v sp)
+deep_force ctx (VRigid r sp a) = VRigid r (fmap (deep_force ctx) sp) a
+deep_force ctx (VLam s va vb) = VLam s (deep_force ctx va) $ deep_force ctx . vb
 deep_force ctx (VPi s v vb) = VPi s (deep_force ctx v) $ deep_force ctx . vb
 deep_force _ v = v
 
 -- where the computation happens
-value_app :: Value -> Value -> Value
-value_app (VLam _ body) v = body v
-value_app (VFlex s spine) v = VFlex s (spine :|> v)
-value_app (VRigid x spine) v = VRigid x (spine :|> v)
-value_app _ _ = error "impossible"
+value_app :: ElabCtx -> Value -> Value -> Value
+value_app _ (VLam _ _ body) v = body v
+value_app ctx (VFlex s spine a) v = VFlex s (spine :|> v) (ty_app ctx a v)
+value_app ctx (VRigid x spine a) v = VRigid x (spine :|> v) (ty_app ctx a v)
+value_app _ _ _ = error "impossible"
+
+ty_app :: ElabCtx -> Value -> Value -> Value
+ty_app ctx a t = case force ctx a of
+  VPi _ _ b -> b t
+  _ -> error "impossible"
 
 -- apply single value to a spine
-value_app_spine :: Value -> Spine -> Value
-value_app_spine v Empty = v
-value_app_spine v (spine :|> s) = value_app_spine v spine `value_app` s
+value_app_spine :: ElabCtx -> Value -> Spine -> Value
+value_app_spine _ v Empty = v
+value_app_spine ctx v (spine :|> s) = value_app ctx (value_app_spine ctx v spine) s
 
 -- normal form evaluation
 eval :: ElabCtx -> Term -> Value
 eval ctx (Const v) = get_const_def_partial ctx v
 eval ctx (Free m) = case get_free_status_partial ctx m of
   Substituted v -> v
-  Fresh _ -> VFree m
+  Fresh _ -> VFree m (get_free_ty_partial ctx m)
 eval ctx (Bound i) = ctx.lenv !!! i
-eval ctx (Lam s body) = VLam s $ \x -> eval (extend_lenv ctx x) body
+eval ctx (ALam s a body) = VLam s (eval ctx a) (\x -> eval (extend_lenv ctx x) body)
 eval ctx (Pi ms t1 t2) = VPi ms (eval ctx t1) (\x -> eval (extend_lenv ctx x) t2)
-eval ctx (e1 :@ e2) = eval ctx e1 `value_app` eval ctx e2
+eval ctx (e1 :@ e2) = value_app ctx (eval ctx e1) (eval ctx e2)
 eval _ (Sort s) = VSort s
-eval ctx (ALam s _ body) = eval ctx $ Lam s body
 
 quote :: ElabCtx -> Value -> Term
 quote ctx = go_quote ctx.lvl . force ctx
@@ -272,13 +276,13 @@ quote_0_nonforcing = go_quote 0
 
 go_quote :: Lvl -> Value -> Term
 -- free var
-go_quote l (VFlex s spine) = go_quote_spine l (Free s) spine
+go_quote l (VFlex s spine _) = go_quote_spine l (Free s) spine
 -- bound var
-go_quote l (VRigid (Left x) spine) = go_quote_spine l (Bound $ lvl2idx l x) spine
+go_quote l (VRigid (Left x) spine _) = go_quote_spine l (Bound $ lvl2idx l x) spine
 -- constant
-go_quote l (VRigid (Right s) spine) = go_quote_spine l (Const s) spine
-go_quote l (VLam s body) = Lam s $ go_quote (l + 1) (body $ VBound l)
-go_quote l (VPi ms t1 tbody) = Pi ms (go_quote l t1) $ go_quote (l + 1) (tbody $ VBound l)
+go_quote l (VRigid (Right s) spine _) = go_quote_spine l (Const s) spine
+go_quote l (VLam s a body) = ALam s (go_quote l a) $ go_quote (l + 1) (body $ VBound l a)
+go_quote l (VPi s a body) = Pi s (go_quote l a) $ go_quote (l + 1) (body $ VBound l a)
 go_quote _ (VSort s) = Sort s
 
 go_quote_spine :: Lvl -> Term -> Spine -> Term
@@ -289,12 +293,13 @@ nf :: ElabCtx -> Term -> Term
 nf ctx = quote ctx . eval ctx
 
 eta_reduce :: Term -> Term
-eta_reduce (Lam _ (t :@ Bound 0)) | not (0 `free_in` t) = shift_down t
+eta_reduce (ALam _ _ (t :@ Bound 0)) | not (0 `free_in` t) = shift_down t
   where
     free_in :: Idx -> Term -> Bool
     free_in i = go
       where
-        go (Lam _ b) = free_in (i + 1) b
+        -- TODO: simplify
+        go (ALam _ a b) = go a || free_in (i + 1) b
         go (Pi _ t1 t2) = go t1 || free_in (i + 1) t2
         go (t1 :@ t2) = go t1 || go t2
         go (Bound i') = i == i'
@@ -304,13 +309,13 @@ eta_reduce (Lam _ (t :@ Bound 0)) | not (0 `free_in` t) = shift_down t
     shift_down = go 0
       where
         -- c counts the number of binders we crossed
-        go c (Lam s b) = Lam s (go (c + 1) b)
+        go c (ALam s a b) = ALam s (go c a) (go (c + 1) b)
         go c (Pi s t1 t2) = Pi s (go c t1) (go (c + 1) t2)
         go c (t1 :@ t2) = go c t1 :@ go c t2
         go c (Bound i) | i == c = error "eta_reduce: broken invariant"
         go c (Bound i) | i > c = Bound $ i - 1
         go _ t1 = t1
-eta_reduce (Lam s t) = Lam s (eta_reduce t)
+eta_reduce (ALam s a t) = ALam s (eta_reduce a) (eta_reduce t)
 eta_reduce (Pi s t1 t2) = Pi s (eta_reduce t1) (eta_reduce t2)
 eta_reduce (t1 :@ t2) = eta_reduce t1 :@ eta_reduce t2
 eta_reduce t = t
@@ -398,12 +403,12 @@ check ctx (RSrcPos pos r) v = check ctx{srcpos = pos} r v
 check ctx (RLam s body) (VPi _ vt vf) = do
   tc_trace ["check: rlam/vpi", show (RLam s body), show_val ctx (VPi "" vt vf)]
   let ctx' = bind_var ctx (s, vt)
-  tm <- check ctx' body (vf (VBound ctx.lvl))
-  pure $ Lam s tm
+  tm <- check ctx' body (vf (VBound ctx.lvl vt))
+  pure $ ALam s (quote ctx vt) tm
 check ctx r vty_want = do
   tc_trace ["check: other", show r, show_val ctx vty_want]
   (tm, vty_have) <- infer ctx r
-  unless (vty_want `abe_conv` vty_have) $
+  unless (abe_conv ctx vty_want vty_have) $
     report ctx $
       "expected type " <> show_val ctx vty_want <> " - got " <> show_val ctx vty_have
   pure tm
@@ -416,24 +421,23 @@ check_rule ctx (VSort s1, VSort s2) = when ((s1, s2) `notElem` allowed_rules) $ 
 check_rule ctx (x1, x2) = report ctx $ "not a sort: " <> show (show_val ctx x1, show_val ctx x2)
 
 -- precondition: both values have the same type
+-- this does not perform unification
 -- instead of comparing terms after quoting,
 -- we can do fast conversion checking on values directly
 -- use special conversion variables with fresh names by abusing the VBound constructor together with negative levels
 -- these conversion variables are invalid outside of and only used for conversion checking
-abe_conv :: Value -> Value -> Bool
-abe_conv = go (-1)
+abe_conv :: ElabCtx -> Value -> Value -> Bool
+abe_conv ctx = go (-1)
   where
     go :: Lvl -> Value -> Value -> Bool
     go _ (VSort s1) (VSort s2) = s1 == s2
-    go l (VPi _ a1 b1) (VPi _ a2 b2) = go l a1 a2 && go (l - 1) (b1 $ VBound l) (b2 $ VBound l)
-    go l (VLam _ b1) (VLam _ b2) = go (l - 1) (b1 $ VBound l) (b2 $ VBound l)
-    -- this does not perform / consider unification, so we need to be careful during unification
-    -- (during typechecking, equality for unreplaced metas should be nominal)
-    go l (VFlex s1 sp1) (VFlex s2 sp2) = s1 == s2 && go_spine l sp1 sp2
-    go l (VRigid x1 sp1) (VRigid x2 sp2) = x1 == x2 && go_spine l sp1 sp2
+    go l (VLam _ a b1) (VLam _ _ b2) = go (l - 1) (b1 $ VBound l a) (b2 $ VBound l a)
+    go l (VFlex s1 sp1 _) (VFlex s2 sp2 _) = s1 == s2 && go_spine l sp1 sp2
+    go l (VRigid x1 sp1 _) (VRigid x2 sp2 _) = x1 == x2 && go_spine l sp1 sp2
+    go l (VPi _ a1 b1) (VPi _ a2 b2) = go l a1 a2 && go (l - 1) (b1 $ VBound l a1) (b2 $ VBound l a1)
     -- syntax-directed eta equality cases
-    go l v (VLam _ b) = go (l - 1) (v `value_app` VBound l) (b $ VBound l)
-    go l (VLam _ b) v = go (l - 1) (b $ VBound l) (v `value_app` VBound l)
+    go l v (VLam _ a b) = go (l - 1) (value_app ctx v $ VBound l a) (b $ VBound l a)
+    go l (VLam _ a b) v = go (l - 1) (b $ VBound l a) (value_app ctx v $ VBound l a)
     go _ _ _ = False
     go_spine :: Lvl -> Spine -> Spine -> Bool
     go_spine _ Empty Empty = True
@@ -452,15 +456,14 @@ instance Show Term where
 instance {-# OVERLAPPING #-} Show String where
   show x = '"' : x <> "\""
 
+print_tyannot :: Bool
+print_tyannot = False
+
 pp_term :: [String] -> Int -> Term -> ShowS
 pp_term ns ep t = case t of
   Const (Name s) -> (const_typeset s <>)
   Free (Metavar m) -> ("?" <>) . (show m <>)
   Bound (Idx i) -> if i < List.genericLength ns then ((ns `List.genericIndex` i) <>) else (show i <>)
-  Lam (Name s) e -> par ep lam_p $ ("λ " <>) . (s <>) . go_lam (s : ns) e
-    where
-      go_lam nss (Lam (Name s') e') = (" " <>) . (s' <>) . go_lam (s' : nss) e'
-      go_lam nss e' = (". " <>) . pp_term nss lam_p e'
   Pi "" a b -> par ep pi_p $ pp_term ns app_p a . (" -> " <>) . pp_term ("" : ns) pi_p b
   Pi (Name s) a b -> par ep pi_p $ ("forall " <>) . (s <>) . (":" <>) . pp_term ns lam_p a . go_pi (s : ns) b
     where
@@ -468,10 +471,11 @@ pp_term ns ep t = case t of
       go_pi nss e' = (". " <>) . pp_term nss pi_p e'
   e1 :@ e2 -> par ep app_p $ pp_term ns app_p e1 . (" " <>) . pp_term ns atom_p e2
   Sort s -> (show s <>)
-  ALam (Name s) ty e -> par ep lam_p $ ("λ " <>) . (s <>) . (":" <>) . pp_term ns lam_p ty . go_alam (s : ns) e
+  ALam (Name s) ty e -> par ep lam_p $ ("λ " <>) . (s <>) . pp_tyannot ty . go_alam (s : ns) e
     where
-      go_alam nss (ALam (Name s') t' e') = (" " <>) . (s' <>) . (":" <>) . pp_term ns lam_p t' . go_alam (s' : nss) e'
+      go_alam nss (ALam (Name s') t' e') = (" " <>) . (s' <>) . pp_tyannot t' . go_alam (s' : nss) e'
       go_alam nss e' = (". " <>) . pp_term nss lam_p e'
+      pp_tyannot a = if print_tyannot then (":" <>) . pp_term ns lam_p a else id
   where
     par :: Int -> Int -> ShowS -> ShowS
     par enclosing_p p = showParen (p < enclosing_p)
