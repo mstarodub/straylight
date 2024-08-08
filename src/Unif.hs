@@ -20,7 +20,7 @@ import Order ()
 -- debug_print
 uf_trace :: ElabCtx -> [String] -> a -> a
 uf_trace ctx ss x =
-  if True then trace ("TRACE " <> show ctx.dbg_unif <> " " <> unwords ss) x else x
+  if False then trace ("TRACE " <> show ctx.dbg_unif <> " " <> unwords ss) x else x
 
 newtype Stream a = Stream [a]
   deriving (GHC.Exts.IsList) via [a]
@@ -54,7 +54,7 @@ instance Monoid (Stream a) where
 --   but syntactically nonequal values that are repeatedly reduced to hnf only normalize to the same thing
 --   when a larger metacontext is used for conversion (which is never the case)
 
--- TODO: re-check the constraints on each binding!
+-- TODO: we use assertions for some things we think are invariants of algoritm (n > 0 / β equal in some arg)
 
 newtype UnifConstraint = Uc (Value, Value)
 
@@ -238,12 +238,10 @@ modif_metactx (Metavar m) mty replacee dbg_lastbind ctx =
     , dbg_unif = second (const dbg_lastbind) ctx.dbg_unif
     }
 
--- TODO: the "x" is just for debug printing
 -- TODO: this should really construct values so we don't have to quote then eval unnecessarily,
 --   but that requires merging this with gen_apps and more thought
 -- construct nabs lambda abstractions around a spine of applications body_1 ... body_n base
-
--- mk_lam :: Term -> [Term] -> Int -> Term
+-- TODO: the "x" is just for debug printing
 mk_lam :: ElabCtx -> Term -> [Term] -> [Value] -> Term
 mk_lam ctx base body ntys = foldl (\b ty -> ALam "x" (quote ctx ty) b) (foldl (:@) base body) ntys
 
