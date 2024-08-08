@@ -296,14 +296,11 @@ eta_reduce :: Term -> Term
 eta_reduce (ALam _ _ (t :@ Bound 0)) | not (0 `free_in` t) = shift_down t
   where
     free_in :: Idx -> Term -> Bool
-    free_in i = go
-      where
-        -- TODO: simplify
-        go (ALam _ a b) = go a || free_in (i + 1) b
-        go (Pi _ t1 t2) = go t1 || free_in (i + 1) t2
-        go (t1 :@ t2) = go t1 || go t2
-        go (Bound i') = i == i'
-        go _ = False
+    free_in i (ALam _ a b) = free_in i a || free_in (i + 1) b
+    free_in i (Pi _ t1 t2) = free_in i t1 || free_in (i + 1) t2
+    free_in i (t1 :@ t2) = free_in i t1 || free_in i t2
+    free_in i (Bound i') = i == i'
+    free_in _ _ = False
     -- only bound vars "outside" / free vars
     shift_down :: Term -> Term
     shift_down = go 0
