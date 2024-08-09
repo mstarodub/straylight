@@ -319,6 +319,8 @@ eta_reduce t = t
 
 -- typechecking monad
 type Tc = Except String
+runTC = runExcept
+runTC_partial = either error id . runTC
 
 report :: ElabCtx -> String -> Tc a
 report ctx msg = throwError $ sourcePosPretty ctx.srcpos <> ":\n" <> msg
@@ -364,7 +366,7 @@ mk_ctx pos = go (ElabCtx [] [] 0 [] IntMap.empty (0, "") pos)
     go ct (_ : _) = report ct "invalid toplevel"
 
 empty_ctx :: ElabCtx
-empty_ctx = either error id . runExcept $ mk_ctx (initialPos mempty) []
+empty_ctx = runTC_partial $ mk_ctx (initialPos mempty) []
 
 infer :: ElabCtx -> Raw -> Tc (Term, Value)
 infer ctx (RSrcPos pos r) = infer ctx{srcpos = pos} r
@@ -535,8 +537,10 @@ instance Show ElabCtx where
 
 type Parser = Parsec Void String
 
+debug_nosrcpos = False
+
 with_pos :: Parser Raw -> Parser Raw
-with_pos p = RSrcPos <$> getSourcePos <*> p
+with_pos p = if debug_nosrcpos then p else RSrcPos <$> getSourcePos <*> p
 
 whitespace :: Parser ()
 whitespace = L.space C.space1 (L.skipLineComment "--") empty
@@ -563,7 +567,7 @@ ident_chars :: Char -> Bool
 ident_chars c = isLowerCase c || isUpperCase c || c == '_' || c == '\''
 
 reserved_keywords :: [String]
-reserved_keywords = ["let", "const", "free", "forall", "λ", "_lam", "_pi"]
+reserved_keywords = ["let", "const", "free", "forall", "λ", "_lam", "_pi", "_sort"]
 
 p_ident :: Parser Name
 p_ident = do
@@ -676,7 +680,7 @@ tc_inputfile filename = do
       fail $ errorBundlePretty e
     Right rs -> do
       let ctx = mk_ctx (initialPos filename) rs
-      case runExcept ctx of
+      case runTC ctx of
         Left e -> fail $ display_err contents e
         Right r -> pure r
 
