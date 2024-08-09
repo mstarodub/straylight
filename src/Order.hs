@@ -26,48 +26,66 @@ data FOFTerm
   | FOFRigid (Either Idx Name)
   | FOFApp FOFTerm FOFTerm
   | FOFSort Sorts
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
+pattern FOFConst x = FOFRigid (Right x)
+pattern FOFBound i = FOFRigid (Left i)
 
-type VarBal = Map Metavar Integer
+-- kbo precedence given by default Ord
+deriving instance Ord FOFTerm
 
-ckbo :: Value -> Value -> Maybe Ordering
-ckbo v1 v2 = o v1 `kbo` o v2
+type PartialOrd = Maybe Ordering
+
+ckbo :: Value -> Value -> PartialOrd
+ckbo v1 v2 = encode v1 `kbo` encode v2
 
 -- naive version
 -- TODO: fluid
-kbo :: FOFTerm -> FOFTerm -> Maybe Ordering
+kbo :: FOFTerm -> FOFTerm -> PartialOrd
 -- TODO: contains check + meta meta head
 kbo (FOFMeta _) (FOFMeta _) = Nothing
 kbo s t | s == t = Just EQ
 kbo s t = do
-  x <- varcheck
-  y <- weight_test
+  x <- varcheck s t
+  y <- weight_test s t
   case x of
     EQ -> pure y
     _ -> if x == y then pure x else Nothing
+
+-- if this returns Just EQ, then all subterms are syntactically equal.
+-- because we already compared for syntactic equality prior to calling this
+-- in kbo and took a different path there, we can thus assume this will only
+-- return Nothing / Just LT / Just GT only
+ckbolex :: [FOFTerm] -> [FOFTerm] -> PartialOrd
+ckbolex [] [] = Just EQ
+ckbolex (x : xs) (y : ys) =
+  let res = kbo x y
+  in if res == Just EQ then ckbolex xs ys else res
+-- differently curried heads. impossible, since number of args gets encoded into the head
+ckbolex _ _ = error "broken invariant"
+
+-- only possibilities are Nothing / Just LT / Just GT
+weight_test :: FOFTerm -> FOFTerm -> PartialOrd
+weight_test s t =
+  if a /= EQ
+    then Just a
+    else
+      if b /= EQ
+        then Just b
+        else ts `ckbolex` tt
   where
-    (hs, ht) = (get_head s, get_head t)
-    (ts, tt) = (get_tail s, get_tail t)
-    -- only possibilities are Nothing / Just LT / Just GT
-    weight_test :: Maybe Ordering
-    weight_test =
-      let
-        a = ϕ s `compare` ϕ t
-        b = hs `compare` ht
-      in
-        if a /= EQ
-          then Just a
-          else
-            if b /= EQ
-              then Just b
-              else ts `ckbolex` tt
-    -- n(x,s) ? n(x,t): variable balance
-    varcheck :: Maybe Ordering
-    varcheck =
-      foldr cmp_f (Just EQ) $
-        Map.unionWith (+) fs (Map.map negate ft)
+    (hs, ht) = (get_fof_head s, get_fof_head t)
+    (ts, tt) = (get_fof_tail s, get_fof_tail t)
+    a = ϕ s `compare` ϕ t
+    b = hs `compare` ht
+
+type VarBal = Map Metavar Integer
+
+-- n(x,s) ? n(x,t): variable balance
+varcheck :: FOFTerm -> FOFTerm -> PartialOrd
+varcheck s t = foldr cmp_f (Just EQ) $ Map.unionWith (+) fs (Map.map negate ft)
+  where
     (fs, ft) = (free_occurencies s, free_occurencies t)
-    cmp_f :: Integer -> Maybe Ordering -> Maybe Ordering
+    cmp_f :: Integer -> PartialOrd -> PartialOrd
     cmp_f _ Nothing = Nothing
     cmp_f v (Just EQ) | v == 0 = Just EQ
     cmp_f v (Just EQ) | v < 0 = Just LT
@@ -77,79 +95,75 @@ kbo s t = do
     cmp_f _ (Just LT) = Just LT
     cmp_f _ (Just GT) = Just GT
     cmp_f _ _ = error "impossible"
+    free_occurencies :: FOFTerm -> VarBal
+    free_occurencies = go Map.empty
+      where
+        go mp (FOFMeta m) = Map.insertWith (+) m 1 mp
+        go mp (FOFApp t1 t2) = go (go mp t1) t2
+        go mp _ = mp
 
--- if this returns Just EQ, then all subterms are syntactically equal.
--- because we already compared for syntactic equality prior to calling this
--- in kbo and took a different path there, we can thus assume this will only
--- return Nothing / Just LT / Just GT only
-ckbolex :: [FOFTerm] -> [FOFTerm] -> Maybe Ordering
-ckbolex [] [] = Just EQ
-ckbolex (x : xs) (y : ys) =
-  let res = kbo x y
-  in if res == Just EQ then ckbolex xs ys else res
--- differently curried heads. impossible because number of args gets encoded into head
-ckbolex _ _ = error "broken invariant"
+get_fof_head :: FOFTerm -> FOFTerm
+get_fof_head (FOFApp t1 _) = get_fof_head t1
+get_fof_head t = t
 
--- TODO
-get_head :: FOFTerm -> FOFTerm
-get_head = undefined
-get_tail :: FOFTerm -> [FOFTerm]
-get_tail = undefined
-
-free_occurencies :: FOFTerm -> VarBal
-free_occurencies = go Map.empty
-  where
-    go mp (FOFMeta m) = Map.insertWith (+) m 1 mp
-    go mp (FOFApp t1 t2) = go (go mp t1) t2
-    go mp _ = mp
+get_fof_tail :: FOFTerm -> [FOFTerm]
+get_fof_tail (FOFApp t1 t2) = get_fof_tail t1 <> [t2]
+get_fof_tail _ = []
 
 -- trivially admissible weight function.
 -- an example heuristic could be: sorts > _lam > bound vars > _pi > consts
 ϕ :: FOFTerm -> Natural
-ϕ (FOFMeta _) = μ
-ϕ (FOFSort _) = μ
-ϕ (FOFRigid (Left _)) = μ
-ϕ (FOFRigid (Right _)) = μ
-ϕ (FOFApp t1 t2) = ϕ t1 + ϕ t2
-
-μ :: Natural
-μ = 1
+ϕ t = case t of
+  FOFMeta _ -> μ
+  FOFSort _ -> μ
+  FOFRigid (Left _) -> μ
+  FOFRigid (Right _) -> μ
+  FOFApp t1 t2 -> ϕ t1 + ϕ t2
+  where
+    μ :: Natural
+    μ = 1
 
 -- encoding could be done lazily with get_args if we had a first-order representation
 -- TODO: for now, only forced terms may be compared - is this what we want?
-o :: Value -> FOFTerm
-o = mk_fof . go . eta_reduce . quote_0_nonforcing
+-- TODO: forcing should be possible to do during quoting "for free". also forcing up to head is not enough?
+encode :: Value -> FOFTerm
+encode = o . eta_reduce . quote_0_nonforcing
+
+o :: Term -> FOFTerm
+o = mk_fof 0 . go
   where
-    -- future improvement with η-long stable TO: here is how it could look like on values
-    -- currently we can't do this because we need to eta reduce before encoding,
-    -- which only seems to be possible on terms.
-    -- this fn is similar to strip_abstr, abe_conv, quote
-    -- important: the debruijn levels in these intermediate values are actually indices.
-    -- go :: Lvl -> Value -> Value
-    -- go l (VLam _ b) = olam `value_app` (go (l + 1) (b $ VBound l))
-    -- go l (VPi _ a b) = opi `value_app` a `value_app` (go (l + 1) (b $ VBound l))
-    -- go l (VFlex m sp) = VFlex m $ fmap (go (l + 1)) sp
-    -- go l (VRigid (Left x) sp) = VRigid (Left . coerce $ lvl2idx l x) $ fmap (go (l + 1)) sp
-    -- go l (VRigid (Right n) sp) = VRigid (Right n) $ fmap (go (l + 1)) sp
-    -- go _ v = v
-    -- TODO: this is insufficiently recursive
     go :: Term -> Term
-    go (ALam _ a b) = olam :@ a :@ b
-    go (Pi _ a b) = opi :@ a :@ b
+    go (ALam _ a b) = olam :@ go a :@ go b
+    go (Pi _ a b) = opi :@ go a :@ go b
     go (t1 :@ t2) = go t1 :@ go t2
     go t = t
     olam = Const "_lam"
     opi = Const "_pi"
-    mk_fof :: Term -> FOFTerm
-    mk_fof (Free m) = FOFMeta m
-    mk_fof (Bound i) = FOFRigid (Left i)
-    mk_fof (Const s) = FOFRigid (Right s)
-    mk_fof (Sort k) = FOFSort k
-    mk_fof (t1 :@ t2) = mk_fof t1 `FOFApp` mk_fof t2
-    mk_fof _ = error "broken invariant"
+    mk_fof :: Natural -> Term -> FOFTerm
+    mk_fof _ (Free m) = FOFMeta m
+    mk_fof _ (Bound i) = FOFRigid (Left i)
+    mk_fof _ (Sort k) = FOFSort k
+    mk_fof d (Const s) = FOFRigid (Right $ odepth d s)
+    mk_fof d (t1 :@ t2) = mk_fof (d + 1) t1 `FOFApp` mk_fof 0 t2
+    mk_fof _ _ = error "broken invariant"
+    -- encode the number of arguments
+    odepth d (Name s) = Name $ s <> "_" <> show d
+
+-- future improvement with η-long stable TO: here is how it could look like on values
+-- currently we can't do this because we need to eta reduce before encoding,
+-- which only seems to be possible on terms.
+-- this fn is similar to strip_abstr, abe_conv, quote
+-- important: the debruijn levels in these intermediate values are actually indices.
+-- go :: Lvl -> Value -> Value
+-- go l (VLam _ b) = olam `value_app` (go (l + 1) (b $ VBound l))
+-- go l (VPi _ a b) = opi `value_app` a `value_app` (go (l + 1) (b $ VBound l))
+-- go l (VFlex m sp) = VFlex m $ fmap (go (l + 1)) sp
+-- go l (VRigid (Left x) sp) = VRigid (Left . coerce $ lvl2idx l x) $ fmap (go (l + 1)) sp
+-- go l (VRigid (Right n) sp) = VRigid (Right n) $ fmap (go (l + 1)) sp
+-- go _ v = v
 
 -- TODO: optimized, single traversal
-tkbo :: VarBal -> Integer -> FOFTerm -> FOFTerm -> (VarBal, Integer, Maybe Ordering)
+tkbo :: VarBal -> Integer -> FOFTerm -> FOFTerm -> (VarBal, Integer, PartialOrd)
 -- tkbo vb wb (FOFMeta x) (FOFMeta y) = (inc_vb x $ dec_vb y vb, wb, if x == y then Just EQ else Nothing)
 tkbo _ _ _ _ = undefined
 
