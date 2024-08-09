@@ -269,25 +269,32 @@ eval ctx (e1 :@ e2) = value_app ctx (eval ctx e1) (eval ctx e2)
 eval _ (Sort s) = VSort s
 
 quote :: ElabCtx -> Value -> Term
-quote ctx = go_quote ctx.lvl . force ctx
+quote ctx v = case force ctx v of
+  VFlex s spine _ -> quote_spine (Free s) spine
+  VRigid (Left x) spine _ -> quote_spine (Bound $ lvl2idx ctx.lvl x) spine
+  VRigid (Right s) spine _ -> quote_spine (Const s) spine
+  VLam s a body -> ALam s (quote ctx a) $ quote ctx' (body $ VBound ctx.lvl a)
+  VPi s a body -> Pi s (quote ctx a) $ quote ctx' (body $ VBound ctx.lvl a)
+  VSort s -> Sort s
+  where
+    ctx' = ctx{lvl = ctx.lvl + 1}
+    quote_spine :: Term -> Spine -> Term
+    quote_spine t Empty = t
+    quote_spine t (spine :|> sp) = quote_spine t spine :@ quote ctx sp
 
 quote_0_nonforcing :: Value -> Term
-quote_0_nonforcing = go_quote 0
-
-go_quote :: Lvl -> Value -> Term
--- free var
-go_quote l (VFlex s spine _) = go_quote_spine l (Free s) spine
--- bound var
-go_quote l (VRigid (Left x) spine _) = go_quote_spine l (Bound $ lvl2idx l x) spine
--- constant
-go_quote l (VRigid (Right s) spine _) = go_quote_spine l (Const s) spine
-go_quote l (VLam s a body) = ALam s (go_quote l a) $ go_quote (l + 1) (body $ VBound l a)
-go_quote l (VPi s a body) = Pi s (go_quote l a) $ go_quote (l + 1) (body $ VBound l a)
-go_quote _ (VSort s) = Sort s
-
-go_quote_spine :: Lvl -> Term -> Spine -> Term
-go_quote_spine _ t Empty = t
-go_quote_spine l t (spine :|> sp) = go_quote_spine l t spine :@ go_quote l sp
+quote_0_nonforcing = go 0
+  where
+    go :: Lvl -> Value -> Term
+    go l (VFlex s spine _) = go_spine l (Free s) spine
+    go l (VRigid (Left x) spine _) = go_spine l (Bound $ lvl2idx l x) spine
+    go l (VRigid (Right s) spine _) = go_spine l (Const s) spine
+    go l (VLam s a body) = ALam s (go l a) $ go (l + 1) (body $ VBound l a)
+    go l (VPi s a body) = Pi s (go l a) $ go (l + 1) (body $ VBound l a)
+    go _ (VSort s) = Sort s
+    go_spine :: Lvl -> Term -> Spine -> Term
+    go_spine _ t Empty = t
+    go_spine l t (spine :|> sp) = go_spine l t spine :@ go l sp
 
 nf :: ElabCtx -> Term -> Term
 nf ctx = quote ctx . eval ctx

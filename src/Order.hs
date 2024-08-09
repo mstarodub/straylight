@@ -143,7 +143,6 @@ has_ho_freevars _ = False
 
 -- encoding could be done lazily with get_args if we had a first-order representation
 -- TODO: for now, only forced terms may be compared - is this what we want?
--- TODO: forcing should be possible to do during quoting "for free".
 encode :: Value -> FOFTerm
 encode = o . eta_reduce . quote_0_nonforcing
 
