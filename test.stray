@@ -13,10 +13,13 @@ let boolnat : * = Bool -> Natural;
 
 -- Church natural numbers
 let Nat  : * = forall N:*. (N -> N) -> N -> N;
+let zero : Nat = \N s z. z;
 let five : Nat = \N s z. s (s (s (s (s z))));
 let add'  : Nat -> Nat -> Nat = \m n f x. m f (n f x);
 let add  : Nat -> Nat -> Nat = \a b N s z. a N s (b N s z);
 let mul  : Nat -> Nat -> Nat = \a b N s z. a N (b N s) z;
+let exp : Nat -> Nat -> Nat = \a b N. b (N -> N) (a N);
+let succ : Nat -> Nat = \a N s z. s (a N s z);
 
 let ten      : Nat = add five five;
 let hundred  : Nat = mul ten ten;

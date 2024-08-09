@@ -77,10 +77,10 @@ common imports
 
 executable tst
     import:         ghc-settings, extensions, imports
-    main-is:        Elab.hs
-    ghc-options:    -main-is Elab
+    main-is:        Tests.hs
+    ghc-options:    -main-is Tests
     hs-source-dirs: src
     other-modules:
+        Elab
         Order
-        Tests
         Unif

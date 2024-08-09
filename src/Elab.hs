@@ -39,8 +39,7 @@ data Raw
   | RLam Name Raw
   | RPi Name Raw Raw
   | RStar
-  | -- type needs to be brought into scope / this builds up the context
-    RLet Name Raw Raw -- RLet x:a = t
+  | RLet Name Raw Raw -- RLet x:a = t
   | RCLet Name Raw -- RCLet x:a
   | RFLet Metavar Raw -- RFLet x:a
   | RFree Metavar -- ?f
@@ -373,7 +372,10 @@ mk_ctx pos = go (ElabCtx [] [] 0 [] IntMap.empty (0, "") pos)
     go ct (_ : _) = report ct "invalid toplevel"
 
 empty_ctx :: ElabCtx
-empty_ctx = runTC_partial $ mk_ctx (initialPos mempty) []
+empty_ctx = ctx_fromraw []
+
+ctx_fromraw :: [Raw] -> ElabCtx
+ctx_fromraw = runTC_partial . mk_ctx (initialPos mempty)
 
 infer :: ElabCtx -> Raw -> Tc (Term, Value)
 infer ctx (RSrcPos pos r) = infer ctx{srcpos = pos} r
@@ -392,7 +394,7 @@ infer ctx (RApp r1 r2) = do
     VPi _ a b -> do
       tm2 <- check ctx r2 a
       pure (tm1 :@ tm2, b (eval ctx tm2))
-    _ -> report ctx $ "non-function in application - " <> show_term ctx tm1 <> " : " <> show_val ctx ty1
+    _ -> report ctx $ "non-function in head of application - " <> show_term ctx tm1 <> " : " <> show_val ctx ty1
 infer ctx (RPi s t1 t2) = do
   tc_trace ["infer: rpi", show (RPi s t1 t2)]
   (tm1, s1) <- infer ctx t1
@@ -677,19 +679,21 @@ display_err fileconts errstr =
       (ls, []) -> [ls]
       (ls, _ : rs) -> ls : split c rs
 
---
-
-tc_inputfile :: String -> IO ElabCtx
-tc_inputfile filename = do
-  contents <- readFile filename
+parse_tc_toplvl :: String -> String -> ElabCtx
+parse_tc_toplvl filename contents =
   case parse p_src filename contents of
     Left e -> do
-      fail $ errorBundlePretty e
+      error $ errorBundlePretty e
     Right rs -> do
       let ctx = mk_ctx (initialPos filename) rs
       case runTC ctx of
-        Left e -> fail $ display_err contents e
-        Right r -> pure r
+        Left e -> error $ display_err contents e
+        Right r -> r
 
-main :: IO ()
-main = pure ()
+input_str :: String -> ElabCtx
+input_str = parse_tc_toplvl mempty
+
+input_file :: String -> IO ElabCtx
+input_file filename = do
+  contents <- readFile filename
+  pure $ parse_tc_toplvl filename contents

@@ -4,14 +4,14 @@ import Data.Bifunctor
 import qualified Data.List as List
 import Data.Set (Set)
 import qualified Data.Set as Set
+import GHC.Generics (Generic)
+import Numeric.Natural
 import Test.Hspec
+import Test.Hspec.QuickCheck
 import Test.QuickCheck
+import Test.QuickCheck.Arbitrary.Generic
 import Text.Megaparsec (SourcePos, initialPos)
 import qualified Text.Regex as Regex
-
--- import Test.QuickCheck.Arbitrary.Generic
--- import GHC.Generics (Generic)
--- import Test.Hspec.QuickCheck
 
 import Elab
 import Order
@@ -22,9 +22,6 @@ instance Arbitrary Metavar where
   arbitrary = Metavar <$> elements [0 .. 4]
 instance Arbitrary SourcePos where
   arbitrary = pure $ initialPos mempty
-
--- deriving instance Generic Raw
--- deriving via (GenericArbitrary Raw) instance (Arbitrary Raw)
 
 -- inefficient. should use smallcheck (enumerative pbt)
 -- usage example: gen_setof_x @WTTerm 5
@@ -71,6 +68,44 @@ pp_term_test =
   , ("λ x y z. z", ALam "x" (Sort Star) $ ALam "y" (Sort Star) $ ALam "z" (Sort Star) $ Bound 0)
   ]
 
+-- church numeral reduction tests
+data ArithTestExpr
+  = AN Natural
+  | ASucc ArithTestExpr
+  | AAdd ArithTestExpr ArithTestExpr
+  | AMul ArithTestExpr ArithTestExpr
+  -- enabling exp in ghci leads to hangs
+  --   | AExp ArithTestExpr ArithTestExpr
+  deriving (Show, Eq, Ord, Generic)
+  deriving (Arbitrary) via (GenericArbitrary ArithTestExpr)
+instance Arbitrary Natural where
+  arbitrary = elements [0 .. 2]
+interp_arith_test :: ArithTestExpr -> Natural
+-- interp_arith_test (AExp ae1 ae2) = interp_arith_test ae1 ^ interp_arith_test ae2
+interp_arith_test (AN ae) = ae
+interp_arith_test (ASucc ae) = succ $ interp_arith_test ae
+interp_arith_test (AAdd ae1 ae2) = interp_arith_test ae1 + interp_arith_test ae2
+interp_arith_test (AMul ae1 ae2) = interp_arith_test ae1 * interp_arith_test ae2
+church_arith_test :: ArithTestExpr -> Term
+-- church_arith_test (AExp ae1 ae2) = Const "exp" :@ church_arith_test ae1 :@ church_arith_test ae2
+church_arith_test (AN nat) = church_nat nat
+church_arith_test (ASucc ae) = Const "succ" :@ church_arith_test ae
+church_arith_test (AAdd ae1 ae2) = Const "add" :@ church_arith_test ae1 :@ church_arith_test ae2
+church_arith_test (AMul ae1 ae2) = Const "mul" :@ church_arith_test ae1 :@ church_arith_test ae2
+church_nat :: Natural -> Term
+church_nat i = runTC_partial $ check nat_prelude (RLam "N" $ RLam "s" $ RLam "z" $ iterate (RVar "s" `RApp`) (RVar "z") `List.genericIndex` i) (get_const_def_partial nat_prelude "Nat")
+
+nat_prelude :: ElabCtx
+nat_prelude =
+  input_str $
+    unlines
+      [ "let Nat  : * = forall N:*. (N -> N) -> N -> N;"
+      , "let succ : Nat -> Nat = \\a N s z. s (a N s z);"
+      , "let add  : Nat -> Nat -> Nat = \\a b N s z. a N s (b N s z);"
+      , "let mul  : Nat -> Nat -> Nat = \\a b N s z. a N (b N s) z;"
+      , "let exp  : Nat -> Nat -> Nat = \\a b N. b (N -> N) (a N);"
+      ]
+
 spec :: IO ()
 spec = hspec do
   describe "kbo" do
@@ -89,6 +124,8 @@ spec = hspec do
   describe "pretty printer" do
     it "term" $
       mapM_ (\(expected, tval) -> strip_ansi (show tval) `shouldBe` expected) pp_term_test
+  describe "elab reduction" do
+    prop "random church num expression" $ \ae -> let num = interp_arith_test ae in within 1000000 $ abe_conv nat_prelude (eval nat_prelude $ church_nat num) (eval nat_prelude $ church_arith_test ae)
 
 -- temporary helper to examine differences between functions on terms
 -- newtype DiffTerm = DiffTerm Term
@@ -98,3 +135,6 @@ spec = hspec do
 --     let onwt (WT wt) = not $ alpha_eq [] (nf [] wt) (hnf [] wt)
 --     (WT wt) <- arbitrary @WTTerm `suchThat` onwt
 --     pure $ DiffTerm wt
+
+main :: IO ()
+main = spec
