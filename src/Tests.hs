@@ -1,15 +1,15 @@
 module Tests where
 
+import Data.Bifunctor
 import qualified Data.List as List
-import Data.List.NonEmpty
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Test.Hspec
 import Test.QuickCheck
 import Text.Megaparsec (SourcePos, initialPos)
 
 -- import Test.QuickCheck.Arbitrary.Generic
 -- import GHC.Generics (Generic)
--- import Test.Hspec
 -- import Test.Hspec.QuickCheck
 
 import Elab
@@ -47,9 +47,32 @@ instance Arbitrary WTTerm where
     let _ctx = foldl define_const empty_ctx basetypes
     pure undefined
 
--- TODO: for testing variable condition in kbo
-constr :: NonEmpty Metavar -> FOFTerm
-constr = foldl1 FOFApp . fmap FOFMeta
+getenc_headtail_test :: [((FOFTerm, [FOFTerm]), Term)]
+getenc_headtail_test =
+  [ ((FOFConst "a_2", [FOFConst "b_0", FOFConst "c_0"]), Const "a" :@ Const "b" :@ Const "c")
+  , ((FOFConst "a_1", [FOFConst "b_1" `FOFApp` FOFConst "c_0"]), Const "a" :@ (Const "b" :@ Const "c"))
+  , ((FOFConst "a_0", []), Const "a")
+  , ((FOFConst "a_1", [FOFConst "b_0"]), Const "a" :@ Const "b")
+  , ((FOFConst "a_2", [FOFConst "b_0", FOFConst "c_1" `FOFApp` FOFConst "d_0"]), Const "a" :@ Const "b" :@ (Const "c" :@ Const "d"))
+  , ((FOFConst "a_2", [FOFConst "b_0", FOFConst "c_1" `FOFApp` FOFConst "d_0"]), (Const "a" :@ Const "b") :@ (Const "c" :@ Const "d"))
+  , ((FOFConst "a_2", [FOFConst "c_1" `FOFApp` FOFConst "d_0", FOFConst "b_1" `FOFApp` (FOFConst "bb_1" `FOFApp` FOFConst "bbb_0")]), Const "a" :@ (Const "c" :@ Const "d") :@ (Const "b" :@ (Const "bb" :@ Const "bbb")))
+  ]
+
+spec :: IO ()
+spec = hspec do
+  describe "kbo" do
+    it "encoding"
+      $ mapM_
+        ( \((expected_hd, expected_tl), tval) -> do
+            get_fof_head tval `shouldBe` expected_hd
+            get_fof_tail tval `shouldBe` expected_tl
+        )
+      $ fmap (second o) getenc_headtail_test
+    it "var condition" do
+      let constr :: [Metavar] -> FOFTerm = foldl1 FOFApp . fmap FOFMeta
+      varcheck (constr [0, 0, 1]) (constr [0, 1]) `shouldBe` Just GT
+      varcheck (constr [0, 0, 1]) (constr [0, 1, 1]) `shouldBe` Nothing
+      varcheck (constr [0, 0, 1]) (constr [0, 1, 2]) `shouldBe` Nothing
 
 -- temporary helper to examine differences between functions on terms
 -- newtype DiffTerm = DiffTerm Term
