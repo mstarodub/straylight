@@ -9,6 +9,7 @@ common ghc-settings
         -Wincomplete-record-updates -Wincomplete-uni-patterns -Widentities
         -Wno-missing-signatures -Wno-orphans -Wincomplete-record-selectors
         -Wno-unrecognised-warning-flags -Wno-x-partial
+        -Wno-missing-pattern-synonym-signatures
 
     default-language: Haskell2010
 
