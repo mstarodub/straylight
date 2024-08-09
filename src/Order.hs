@@ -1,7 +1,8 @@
 module Order where
 
+import Control.Monad.State
 import Data.Map (Map)
-import qualified Data.Map as Map (empty, insertWith, map, unionWith)
+import qualified Data.Map as Map (empty, insertWith, map, member, unionWith)
 import Numeric.Natural
 
 import Elab
@@ -25,7 +26,6 @@ data FOFTerm
   = FOFMeta Metavar
   | FOFRigid (Either Idx Name)
   | FOFApp FOFTerm FOFTerm
-  | FOFSort Sorts
   deriving (Eq, Show)
 pattern FOFConst x = FOFRigid (Right x)
 pattern FOFBound i = FOFRigid (Left i)
@@ -39,17 +39,21 @@ ckbo :: Value -> Value -> PartialOrd
 ckbo v1 v2 = encode v1 `kbo` encode v2
 
 -- naive version
--- TODO: fluid
 kbo :: FOFTerm -> FOFTerm -> PartialOrd
--- TODO: contains check + meta meta head
-kbo (FOFMeta _) (FOFMeta _) = Nothing
 kbo s t | s == t = Just EQ
-kbo s t = do
-  x <- varcheck s t
-  y <- weight_test s t
-  case x of
-    EQ -> pure y
-    _ -> if x == y then pure x else Nothing
+kbo s t = case (get_fof_head s, get_fof_head t) of
+  (FOFMeta _, FOFMeta _) -> Nothing
+  -- the applied var case is captured by the concept of fluidity, and handled in the encoding
+  -- if we have a meta head here, then it is the entire term.
+  (FOFMeta m, FOFRigid _) -> if m `is_free_in` t then Just LT else Nothing
+  (FOFRigid _, FOFMeta m) -> if m `is_free_in` t then Just GT else Nothing
+  (FOFRigid _, FOFRigid _) -> do
+    x <- varcheck s t
+    y <- weight_test s t
+    case x of
+      EQ -> pure y
+      _ -> if x == y then pure x else Nothing
+  (_, _) -> error "impossible"
 
 -- if this returns Just EQ, then all subterms are syntactically equal.
 -- because we already compared for syntactic equality prior to calling this
@@ -95,12 +99,16 @@ varcheck s t = foldr cmp_f (Just EQ) $ Map.unionWith (+) fs (Map.map negate ft)
     cmp_f _ (Just LT) = Just LT
     cmp_f _ (Just GT) = Just GT
     cmp_f _ _ = error "impossible"
-    free_occurencies :: FOFTerm -> VarBal
-    free_occurencies = go Map.empty
-      where
-        go mp (FOFMeta m) = Map.insertWith (+) m 1 mp
-        go mp (FOFApp t1 t2) = go (go mp t1) t2
-        go mp _ = mp
+
+free_occurencies :: FOFTerm -> VarBal
+free_occurencies = go Map.empty
+  where
+    go mp (FOFMeta m) = Map.insertWith (+) m 1 mp
+    go mp (FOFApp t1 t2) = go (go mp t1) t2
+    go mp _ = mp
+
+is_free_in :: Metavar -> FOFTerm -> Bool
+is_free_in m t = m `Map.member` free_occurencies t
 
 get_fof_head :: FOFTerm -> FOFTerm
 get_fof_head (FOFApp t1 _) = get_fof_head t1
@@ -110,12 +118,22 @@ get_fof_tail :: FOFTerm -> [FOFTerm]
 get_fof_tail (FOFApp t1 t2) = get_fof_tail t1 <> [t2]
 get_fof_tail _ = []
 
+get_ho_head :: Term -> Term
+get_ho_head (t1 :@ _) = get_ho_head t1
+get_ho_head t = t
+
+has_ho_freevars :: Term -> Bool
+has_ho_freevars (Free _) = True
+has_ho_freevars (Pi _ a b) = has_ho_freevars a || has_ho_freevars b
+has_ho_freevars (ALam _ a b) = has_ho_freevars a || has_ho_freevars b
+has_ho_freevars (t1 :@ t2) = has_ho_freevars t1 || has_ho_freevars t2
+has_ho_freevars _ = False
+
 -- trivially admissible weight function.
 -- an example heuristic could be: sorts > _lam > bound vars > _pi > consts
 ϕ :: FOFTerm -> Natural
 ϕ t = case t of
   FOFMeta _ -> μ
-  FOFSort _ -> μ
   FOFRigid (Left _) -> μ
   FOFRigid (Right _) -> μ
   FOFApp t1 t2 -> ϕ t1 + ϕ t2
@@ -125,29 +143,49 @@ get_fof_tail _ = []
 
 -- encoding could be done lazily with get_args if we had a first-order representation
 -- TODO: for now, only forced terms may be compared - is this what we want?
--- TODO: forcing should be possible to do during quoting "for free". also forcing up to head is not enough?
+-- TODO: forcing should be possible to do during quoting "for free".
 encode :: Value -> FOFTerm
 encode = o . eta_reduce . quote_0_nonforcing
 
 o :: Term -> FOFTerm
-o = mk_fof 0 . go
+o = mk_fof 0 . flip evalState (-1) . go
   where
-    go :: Term -> Term
-    go (ALam _ a b) = olam :@ go a :@ go b
-    go (Pi _ a b) = opi :@ go a :@ go b
-    go (t1 :@ t2) = go t1 :@ go t2
-    go t = t
-    olam = Const "_lam"
-    opi = Const "_pi"
+    go :: Term -> State Metavar Term
+    -- negative free vars do not occur in higher-order terms, so this trick guarantees freshness
+    go t | is_fluid t = do
+      cur_free <- get
+      put $ cur_free - 1
+      pure $ Free cur_free
+    go (ALam _ a b) = do
+      a' <- go a
+      b' <- go b
+      pure $ o_lam :@ a' :@ b'
+    go (Pi _ a b) = do
+      a' <- go a
+      b' <- go b
+      pure $ o_pi :@ a' :@ b'
+    go (t1 :@ t2) = (:@) <$> go t1 <*> go t2
+    go (Sort _) = pure o_sort
+    go t = pure t
+    o_lam = Const "_lam"
+    o_pi = Const "_pi"
+    o_sort = Const "_sort"
     mk_fof :: Natural -> Term -> FOFTerm
     mk_fof _ (Free m) = FOFMeta m
     mk_fof _ (Bound i) = FOFRigid (Left i)
-    mk_fof _ (Sort k) = FOFSort k
     mk_fof d (Const s) = FOFRigid (Right $ odepth d s)
     mk_fof d (t1 :@ t2) = mk_fof (d + 1) t1 `FOFApp` mk_fof 0 t2
     mk_fof _ _ = error "broken invariant"
     -- encode the number of arguments
     odepth d (Name s) = Name $ s <> "_" <> show d
+
+-- t fluid ⟺ (1) t = Y uₙ where n > 0 or (2) t = λ-abstr. and ∃σ substitution. σt is not a λ-abstr.
+-- this "overapproximation" for case (2) (t = λ-abstr. and contains a metavar) is complete
+-- [source: Superpos. with lambdas, page 39]
+is_fluid :: Term -> Bool
+is_fluid (t :@ _) | Free _ <- get_ho_head t = True
+is_fluid (ALam _ _ b) = has_ho_freevars b
+is_fluid _ = False
 
 -- future improvement with η-long stable TO: here is how it could look like on values
 -- currently we can't do this because we need to eta reduce before encoding,
@@ -155,8 +193,8 @@ o = mk_fof 0 . go
 -- this fn is similar to strip_abstr, abe_conv, quote
 -- important: the debruijn levels in these intermediate values are actually indices.
 -- go :: Lvl -> Value -> Value
--- go l (VLam _ b) = olam `value_app` (go (l + 1) (b $ VBound l))
--- go l (VPi _ a b) = opi `value_app` a `value_app` (go (l + 1) (b $ VBound l))
+-- go l (VLam _ b) = o_lam `value_app` (go (l + 1) (b $ VBound l))
+-- go l (VPi _ a b) = o_pi `value_app` a `value_app` (go (l + 1) (b $ VBound l))
 -- go l (VFlex m sp) = VFlex m $ fmap (go (l + 1)) sp
 -- go l (VRigid (Left x) sp) = VRigid (Left . coerce $ lvl2idx l x) $ fmap (go (l + 1)) sp
 -- go l (VRigid (Right n) sp) = VRigid (Right n) $ fmap (go (l + 1)) sp
