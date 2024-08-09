@@ -73,6 +73,7 @@ common imports
         , megaparsec
         , mtl
         , QuickCheck
+        , regex-compat
 
 executable tst
     import:         ghc-settings, extensions, imports
