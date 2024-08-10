@@ -48,7 +48,7 @@ data Raw
   deriving (Show)
 
 newtype Name = Name String deriving (Semigroup, Show, Monoid, Ord, Eq, IsString) via String
-newtype Metavar = Metavar Int deriving (Ord, Eq, Show, Num) via Int
+newtype Metavar = Metavar Int deriving (Ord, Eq, Show, Num, Enum) via Int
 newtype Idx = Idx Int deriving (Eq, Ord, Show, Num) via Int
 newtype Lvl = Lvl Int deriving (Eq, Ord, Show, Num) via Int
 
@@ -213,6 +213,9 @@ get_free_ty_partial ctx (Metavar m) = fst $ ctx.metactx IntMap.! m
 
 get_free_status_partial :: ElabCtx -> Metavar -> MetaStatus
 get_free_status_partial ctx (Metavar m) = snd $ ctx.metactx IntMap.! m
+
+get_free_def_partial :: ElabCtx -> Metavar -> Value
+get_free_def_partial ctx m = VFree m $ get_free_ty_partial ctx m
 
 -- next available metavar counter
 -- caller is responsible for adding the entry!

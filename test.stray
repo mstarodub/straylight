@@ -6,8 +6,17 @@ let cnst : forall (A : *) (B:*). A -> B -> A
 const Bool : *;
 const t : Bool;
 const f : Bool;
-const Natural : *;
+const not : Bool -> Bool;
+const and : Bool -> Bool -> Bool;
+const or : Bool -> Bool -> Bool;
+const impl : Bool -> Bool -> Bool;
+const equiv : Bool -> Bool -> Bool;
+const ∀ : forall a:*. (a -> Bool) -> Bool;
+const ∃ : forall a:*. (a -> Bool) -> Bool;
+const eq : forall a:*. a -> a -> Bool;
+const hchoice : forall a:*. (a -> Bool) -> a;
 
+const Natural : *;
 free 0 : Bool -> Natural;
 let boolnat : * = Bool -> Natural;
 
