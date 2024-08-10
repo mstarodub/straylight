@@ -16,12 +16,13 @@ import qualified Text.Regex as Regex
 import Elab
 import Order
 
+-- TODO: likely not needed
 instance Arbitrary Name where
   arbitrary = Name . List.singleton <$> elements ['w' .. 'z']
 instance Arbitrary Metavar where
   arbitrary = Metavar <$> elements [0 .. 4]
 instance Arbitrary SourcePos where
-  arbitrary = pure $ initialPos mempty
+  arbitrary = pure $ initialPos "randominput"
 
 -- inefficient. should use smallcheck (enumerative pbt)
 -- usage example: gen_setof_x @WTTerm 5

@@ -389,7 +389,7 @@ empty_ctx :: ElabCtx
 empty_ctx = ctx_fromraw []
 
 ctx_fromraw :: [Raw] -> ElabCtx
-ctx_fromraw = runTC_partial . mk_ctx (initialPos mempty)
+ctx_fromraw = runTC_partial . mk_ctx (initialPos "input")
 
 infer :: ElabCtx -> Raw -> Tc (Term, Value)
 infer ctx (RSrcPos pos r) = infer ctx{srcpos = pos} r
@@ -710,10 +710,10 @@ parse_tc_toplvl :: String -> String -> ElabCtx
 parse_tc_toplvl filename = append_parse_tc_toplvl filename empty_ctx
 
 append_input_str :: ElabCtx -> String -> ElabCtx
-append_input_str = append_parse_tc_toplvl mempty
+append_input_str = append_parse_tc_toplvl "input"
 
 input_str :: String -> ElabCtx
-input_str = parse_tc_toplvl mempty
+input_str = parse_tc_toplvl "input"
 
 append_input_file :: ElabCtx -> String -> IO ElabCtx
 append_input_file ctx filename = do
