@@ -92,7 +92,7 @@ base_prelude :: ElabCtx
 base_prelude =
   append_input_str bool_prelude $
     unlines
-      [ "const funext : forall a:* b:*. (a -> b) -> (a -> b) -> a;"
+      [ "const funext : forall (a:*) (b:*). (a -> b) -> (a -> b) -> a;"
       , "free 6 : *;" -- a
       , "free 7 : *;" -- b
       , "free 8 : ?6 -> ?7;" -- y

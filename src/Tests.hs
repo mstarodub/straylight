@@ -64,7 +64,7 @@ getenc_headtail_test =
 
 pp_term_test :: [(String, Term)]
 pp_term_test =
-  [ ("forall a:* b:*. a -> b -> c", Pi "a" (Sort Star) $ Pi "b" (Sort Star) $ Bound 1 :-> Bound 1 :-> Const "c")
+  [ ("forall (a:*) (b:*). a -> b -> c", Pi "a" (Sort Star) $ Pi "b" (Sort Star) $ Bound 1 :-> Bound 1 :-> Const "c")
   , ("a b c (d e) f", Const "a" :@ Const "b" :@ Const "c" :@ (Const "d" :@ Const "e") :@ Const "f")
   , ("λ x y z. z", ALam "x" (Sort Star) $ ALam "y" (Sort Star) $ ALam "z" (Sort Star) $ Bound 0)
   ]

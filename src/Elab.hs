@@ -487,9 +487,15 @@ pp_term ns ep t = case t of
   Free (Metavar m) -> ("?" <>) . (show m <>)
   Bound (Idx i) -> if i < List.genericLength ns then ((ns `List.genericIndex` i) <>) else (show i <>)
   Pi "" a b -> par ep pi_p $ pp_term ns app_p a . (" -> " <>) . pp_term ("" : ns) pi_p b
-  Pi (Name s) a b -> par ep pi_p $ ("forall " <>) . (s <>) . (":" <>) . pp_term ns lam_p a . go_pi (s : ns) b
+  Pi (Name s) a b ->
+    par ep pi_p $
+      ("forall " <>)
+        . showParen (pi_again b) ((s <>) . (":" <>) . pp_term ns lam_p a)
+        . go_pi (s : ns) b
     where
-      go_pi nss (Pi (Name x) a' b') | x /= "" = (" " <>) . (x <>) . (":" <>) . pp_term nss lam_p a' . go_pi (x : nss) b'
+      go_pi nss (Pi (Name x) a' b')
+        | x /= "" =
+            (" " <>) . showParen True ((x <>) . (":" <>) . pp_term nss lam_p a') . go_pi (x : nss) b'
       go_pi nss e' = (". " <>) . pp_term nss pi_p e'
   e1 :@ e2 -> par ep app_p $ pp_term ns app_p e1 . (" " <>) . pp_term ns atom_p e2
   Sort s -> (show s <>)
@@ -501,6 +507,9 @@ pp_term ns ep t = case t of
   where
     par :: Int -> Int -> ShowS -> ShowS
     par enclosing_p p = showParen (p < enclosing_p)
+    pi_again :: Term -> Bool
+    pi_again (Pi _ _ _) = True
+    pi_again _ = False
     (atom_p, app_p, pi_p, lam_p) = (3, 2, 1, 0)
     const_typeset :: String -> String
     const_typeset s =
