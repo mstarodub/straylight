@@ -340,36 +340,39 @@ tc_trace2 :: [String] -> Tc ()
 tc_trace2 ss =
   trace ("TRACE2 " <> unwords ss) $ () `seq` pure ()
 
+mk_ctx :: SourcePos -> [Raw] -> Tc ElabCtx
+mk_ctx pos = build_ctx (ElabCtx [] [] 0 [] IntMap.empty (0, "") pos)
+
+grow_ctx :: SourcePos -> ElabCtx -> [Raw] -> Tc ElabCtx
+grow_ctx pos ctx = build_ctx ctx{srcpos = pos}
+
 -- invariant: we never infer or check RLet and RCLet. get rid of them by
 -- folding over special toplevel dfns (lets and constants) with infer to typecheck and eval to create a value toplevel
 -- we require all constants in the toplevel to be in topologically sorted order, so this is okay
-mk_ctx :: SourcePos -> [Raw] -> Tc ElabCtx
-mk_ctx pos = go (ElabCtx [] [] 0 [] IntMap.empty (0, "") pos)
-  where
-    go :: ElabCtx -> [Raw] -> Tc ElabCtx
-    go ct [] = pure ct
-    go ct (RSrcPos p rt : rw) = go ct{srcpos = p} (rt : rw)
-    go ct (RLet s rty rdef : rw) = do
-      tc_trace ["mk_ctx / rlet", show s]
-      tmty <- infer ct rty
-      let vty = eval ct . fst $ tmty
-      tmv <- check ct rdef vty
-      let vv = eval ct tmv
-      let ct' = define_val ct (s, vv, vty)
-      go ct' rw
-    go ct (RCLet s rty : rw) = do
-      tc_trace ["mk_ctx / const", show s]
-      tmty <- infer ct rty
-      let vty = eval ct . fst $ tmty
-      let ct' = define_const ct (s, vty)
-      go ct' rw
-    go ct (RFLet m rty : rw) = do
-      tc_trace ["mk_ctx / free", show m]
-      tmty <- infer ct rty
-      let vty = eval ct . fst $ tmty
-      let ct' = define_free ct (m, vty)
-      go ct' rw
-    go ct (_ : _) = report ct "invalid toplevel"
+build_ctx :: ElabCtx -> [Raw] -> Tc ElabCtx
+build_ctx ct [] = pure ct
+build_ctx ct (RSrcPos p rt : rw) = build_ctx ct{srcpos = p} (rt : rw)
+build_ctx ct (RLet s rty rdef : rw) = do
+  tc_trace ["mk_ctx / rlet", show s]
+  tmty <- infer ct rty
+  let vty = eval ct . fst $ tmty
+  tmv <- check ct rdef vty
+  let vv = eval ct tmv
+  let ct' = define_val ct (s, vv, vty)
+  build_ctx ct' rw
+build_ctx ct (RCLet s rty : rw) = do
+  tc_trace ["mk_ctx / const", show s]
+  tmty <- infer ct rty
+  let vty = eval ct . fst $ tmty
+  let ct' = define_const ct (s, vty)
+  build_ctx ct' rw
+build_ctx ct (RFLet m rty : rw) = do
+  tc_trace ["mk_ctx / free", show m]
+  tmty <- infer ct rty
+  let vty = eval ct . fst $ tmty
+  let ct' = define_free ct (m, vty)
+  build_ctx ct' rw
+build_ctx ct (_ : _) = report ct "invalid toplevel"
 
 empty_ctx :: ElabCtx
 empty_ctx = ctx_fromraw []
@@ -573,7 +576,9 @@ p_arr :: Parser String
 p_arr = symbol "→" <|> symbol "->"
 
 ident_chars :: Char -> Bool
-ident_chars c = isLowerCase c || isUpperCase c || c == '_' || c == '\''
+ident_chars c = isLowerCase c || isUpperCase c || c `elem` special_chars
+  where
+    special_chars :: [Char] = ['_', '\'', '∀', '∃']
 
 reserved_keywords :: [String]
 reserved_keywords = ["let", "const", "free", "forall", "λ", "_lam", "_pi", "_sort"]
@@ -679,19 +684,30 @@ display_err fileconts errstr =
       (ls, []) -> [ls]
       (ls, _ : rs) -> ls : split c rs
 
-parse_tc_toplvl :: String -> String -> ElabCtx
-parse_tc_toplvl filename contents =
+append_parse_tc_toplvl :: String -> ElabCtx -> String -> ElabCtx
+append_parse_tc_toplvl filename ctx contents =
   case parse p_src filename contents of
     Left e -> do
       error $ errorBundlePretty e
     Right rs -> do
-      let ctx = mk_ctx (initialPos filename) rs
-      case runTC ctx of
+      let ctx' = grow_ctx (initialPos filename) ctx rs
+      case runTC ctx' of
         Left e -> error $ display_err contents e
         Right r -> r
 
+parse_tc_toplvl :: String -> String -> ElabCtx
+parse_tc_toplvl filename = append_parse_tc_toplvl filename empty_ctx
+
+append_input_str :: ElabCtx -> String -> ElabCtx
+append_input_str = append_parse_tc_toplvl mempty
+
 input_str :: String -> ElabCtx
 input_str = parse_tc_toplvl mempty
+
+append_input_file :: ElabCtx -> String -> IO ElabCtx
+append_input_file ctx filename = do
+  contents <- readFile filename
+  pure $ append_parse_tc_toplvl filename ctx contents
 
 input_file :: String -> IO ElabCtx
 input_file filename = do
