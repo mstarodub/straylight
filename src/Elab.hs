@@ -4,6 +4,7 @@ import Control.Monad
 import Control.Monad.Except
 import Data.Bifunctor
 import Data.Char
+import Data.Either
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 import qualified Data.List as List
@@ -158,6 +159,10 @@ data ElabCtx = ElabCtx
   , dbg_unif :: (Integer, String)
   , srcpos :: SourcePos
   }
+
+already_defined :: ElabCtx -> Either Metavar Name -> Bool
+already_defined ctx (Left (Metavar m)) = m `IntMap.member` ctx.metactx
+already_defined ctx (Right s) = isRight $ lookup_ctx ctx.toplvl s
 
 -- add a bound variable
 bind_var :: ElabCtx -> (Name, Value) -> ElabCtx
@@ -354,6 +359,7 @@ build_ctx ct [] = pure ct
 build_ctx ct (RSrcPos p rt : rw) = build_ctx ct{srcpos = p} (rt : rw)
 build_ctx ct (RLet s rty rdef : rw) = do
   tc_trace ["mk_ctx / rlet", show s]
+  when (already_defined ct (Right s)) $ report ct $ show s <> " is already defined"
   tmty <- infer ct rty
   let vty = eval ct . fst $ tmty
   tmv <- check ct rdef vty
@@ -362,12 +368,14 @@ build_ctx ct (RLet s rty rdef : rw) = do
   build_ctx ct' rw
 build_ctx ct (RCLet s rty : rw) = do
   tc_trace ["mk_ctx / const", show s]
+  when (already_defined ct (Right s)) $ report ct $ show s <> " is already defined"
   tmty <- infer ct rty
   let vty = eval ct . fst $ tmty
   let ct' = define_const ct (s, vty)
   build_ctx ct' rw
 build_ctx ct (RFLet m rty : rw) = do
   tc_trace ["mk_ctx / free", show m]
+  when (already_defined ct (Left m)) $ report ct $ show_term ct (Free m) <> " is already defined"
   tmty <- infer ct rty
   let vty = eval ct . fst $ tmty
   let ct' = define_free ct (m, vty)
