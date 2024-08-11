@@ -10,20 +10,16 @@ import Test.Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
 import Test.QuickCheck.Arbitrary.Generic
-import Text.Megaparsec (SourcePos, initialPos)
 import qualified Text.Regex as Regex
 
 import Elab
 import Order
 import Superpos
 
--- TODO: likely not needed
 instance Arbitrary Name where
   arbitrary = Name . List.singleton <$> elements ['w' .. 'z']
 instance Arbitrary Metavar where
   arbitrary = Metavar <$> elements [0 .. 4]
-instance Arbitrary SourcePos where
-  arbitrary = pure $ initialPos "randominput"
 
 -- inefficient. should use smallcheck (enumerative pbt)
 -- usage example: gen_setof_x @WTTerm 5
@@ -37,9 +33,8 @@ gen_setof_x = go Set.empty
         then go set k
         else go (Set.insert term set) (k - 1)
 
--- TODO: well-typed terms with types constructed from a set of base types
-newtype WTTerm = WT Term
-  deriving (Show, Eq) via Term
+-- TODO: well-typed terms + contexts with types constructed from a set of base types
+data WTTerm = WT Term ElabCtx
 instance Arbitrary WTTerm where
   -- WT <$> arbitrary `suchThat` (isRight . infer_noctx [])
   arbitrary = do
@@ -50,6 +45,7 @@ instance Arbitrary WTTerm where
 strip_ansi :: String -> String
 strip_ansi s = Regex.subRegex re s ""
   where
+    -- taken from https://hackage.haskell.org/package/hledger-lib-1.34/docs/src/Hledger.Utils.String.html#stripAnsi
     re = Regex.mkRegex "\ESC\\[([0-9]+;)*([0-9]+)?[ABCDHJKfmsu]"
 
 getenc_headtail_test :: [((FOFTerm, [FOFTerm]), Term)]
@@ -95,7 +91,12 @@ church_arith_test (ASucc ae) = Const "succ" :@ church_arith_test ae
 church_arith_test (AAdd ae1 ae2) = Const "add" :@ church_arith_test ae1 :@ church_arith_test ae2
 church_arith_test (AMul ae1 ae2) = Const "mul" :@ church_arith_test ae1 :@ church_arith_test ae2
 church_nat :: Natural -> Term
-church_nat i = runTC_partial $ check nat_prelude (RLam "N" $ RLam "s" $ RLam "z" $ iterate (RVar "s" `RApp`) (RVar "z") `List.genericIndex` i) (get_const_def_partial nat_prelude "Nat")
+church_nat i =
+  runTC_partial $
+    check
+      nat_prelude
+      (RLam "N" $ RLam "s" $ RLam "z" $ iterate (RVar "s" `RApp`) (RVar "z") `List.genericIndex` i)
+      (get_const_def_partial nat_prelude "Nat")
 nat_prelude :: ElabCtx
 nat_prelude =
   input_str
@@ -108,6 +109,7 @@ nat_prelude =
 
 green_test_ctx =
   input_str
+    -- the types do not matter for this test
     [ "free 0 : *;"
     , "free 1 : *;"
     , "free 2 : *;"
@@ -121,7 +123,11 @@ green_test_ctx =
     , "const h : ?0 -> ?1 -> ?2;"
     , "const c : *;"
     ]
-green_test_tm = Const "f" :@ (Const "g" :@ Const "a") :@ (Free 9 :@ Const "b") :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
+green_test_tm =
+  Const "f"
+    :@ (Const "g" :@ Const "a")
+    :@ (Free 9 :@ Const "b")
+    :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
 green_test_val = eval green_test_ctx green_test_tm
 
 spec :: IO ()
@@ -143,22 +149,19 @@ spec = hspec do
     it "term" $
       mapM_ (\(expected, tval) -> strip_ansi (show tval) `shouldBe` expected) pp_term_test
   describe "elab reduction" do
-    prop "random church num expression" $ \ae -> let num = interp_arith_test ae in within 1000000 $ abe_conv nat_prelude (eval nat_prelude $ church_nat num) (eval nat_prelude $ church_arith_test ae)
+    prop "random church num expression" $ \ae ->
+      let num = interp_arith_test ae
+      in within 1000000 $
+          abe_conv nat_prelude (eval nat_prelude $ church_nat num) (eval nat_prelude $ church_arith_test ae)
   describe "core calculus" do
     it "green positions" do
       map fst (green_subtms green_test_val) `shouldBe` [[], [0], [0, 0], [1], [2]]
     it "green context replace" do
       quote green_test_ctx (green_replace [0, 0] (eval green_test_ctx $ Const "f" :@ Free 9) green_test_val)
-        `shouldBe` Const "f" :@ (Const "g" :@ (Const "f" :@ Free 9)) :@ (Free 9 :@ Const "b") :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
-
--- temporary helper to examine differences between functions on terms
--- newtype DiffTerm = DiffTerm Term
---   deriving (Show, Eq) via Term
--- instance Arbitrary DiffTerm where
---   arbitrary = do
---     let onwt (WT wt) = not $ alpha_eq [] (nf [] wt) (hnf [] wt)
---     (WT wt) <- arbitrary @WTTerm `suchThat` onwt
---     pure $ DiffTerm wt
+        `shouldBe` Const "f"
+          :@ (Const "g" :@ (Const "f" :@ Free 9))
+          :@ (Free 9 :@ Const "b")
+          :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
 
 main :: IO ()
 main = spec
