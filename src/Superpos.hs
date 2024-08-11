@@ -2,7 +2,11 @@
 
 module Superpos where
 
+import Data.Foldable
 import qualified Data.List as List
+import Data.Maybe
+import qualified Data.Sequence as Seq
+import Numeric.Natural
 
 import Elab
 
@@ -39,27 +43,26 @@ type Formset = [Clause]
 
 bool_prelude :: ElabCtx
 bool_prelude =
-  input_str $
-    unlines
-      [ "const Bool : *;"
-      , "free 0 : *;" -- a
-      , "free 1 : Bool;" -- x : Bool
-      , "free 2 : Bool;" -- y : Bool
-      , "free 3 : ?0;" -- x : a
-      , "free 4 : ?0;" -- y : a
-      , "free 5 : ?0 -> Bool;" -- y : a -> Bool
-      , "const t : Bool;"
-      , "const f : Bool;"
-      , "const not : Bool -> Bool;"
-      , "const and : Bool -> Bool -> Bool;"
-      , "const or : Bool -> Bool -> Bool;"
-      , "const impl : Bool -> Bool -> Bool;"
-      , "const equiv : Bool -> Bool -> Bool;"
-      , "const ∀ : forall a:*. (a -> Bool) -> Bool;"
-      , "const ∃ : forall a:*. (a -> Bool) -> Bool;"
-      , "const eq : forall a:*. a -> a -> Bool;"
-      , "const hchoice : forall a:*. (a -> Bool) -> a;"
-      ]
+  input_str
+    [ "const Bool : *;"
+    , "free 0 : *;" -- a
+    , "free 1 : Bool;" -- x : Bool
+    , "free 2 : Bool;" -- y : Bool
+    , "free 3 : ?0;" -- x : a
+    , "free 4 : ?0;" -- y : a
+    , "free 5 : ?0 -> Bool;" -- y : a -> Bool
+    , "const t : Bool;"
+    , "const f : Bool;"
+    , "const not : Bool -> Bool;"
+    , "const and : Bool -> Bool -> Bool;"
+    , "const or : Bool -> Bool -> Bool;"
+    , "const impl : Bool -> Bool -> Bool;"
+    , "const equiv : Bool -> Bool -> Bool;"
+    , "const ∀ : forall a:*. (a -> Bool) -> Bool;"
+    , "const ∃ : forall a:*. (a -> Bool) -> Bool;"
+    , "const eq : forall a:*. a -> a -> Bool;"
+    , "const hchoice : forall a:*. (a -> Bool) -> a;"
+    ]
 
 -- TODO: how do we add these into the prover state?
 bool_axioms :: Formset
@@ -90,14 +93,14 @@ bool_axioms =
 
 base_prelude :: ElabCtx
 base_prelude =
-  append_input_str bool_prelude $
-    unlines
-      [ "const funext : forall (a:*) (b:*). (a -> b) -> (a -> b) -> a;"
-      , "free 6 : *;" -- a
-      , "free 7 : *;" -- b
-      , "free 8 : ?6 -> ?7;" -- y
-      , "free 9 : ?6 -> ?7;" -- z
-      ]
+  append_input_str
+    bool_prelude
+    [ "const funext : forall (a:*) (b:*). (a -> b) -> (a -> b) -> a;"
+    , "free 6 : *;" -- a
+    , "free 7 : *;" -- b
+    , "free 8 : ?6 -> ?7;" -- y
+    , "free 9 : ?6 -> ?7;" -- z
+    ]
 
 ext_ax :: Clause
 ext_ax =
@@ -109,3 +112,27 @@ ext_ax =
     [a_, b_, y_, z_] = get_free_def_partial base_prelude `map` [6 .. 9]
     funext_ = get_const_def_partial base_prelude "funext"
     va = value_app base_prelude
+
+-- different convention compared to the paper. we start at 0 and the list is reversed
+type Position = [Natural]
+
+-- TODO: we don't force here. the forcing (and passing of ctx) is getting out of hand -
+--   we need to decide precisely where in the pipeline values need to be forced
+green_subtms :: Value -> [(Position, Value)]
+green_subtms = go []
+  where
+    go :: Position -> Value -> [(Position, Value)]
+    go posacc v = (posacc, v) : rest
+      where
+        rest :: [(Position, Value)]
+        rest = case v of
+          -- we never recurse under a lambda, so no bound vars
+          VRigid (Right _) sp _ -> concat $ zipWith go ((: posacc) `map` [0 ..]) $ toList sp
+          _ -> []
+
+green_replace :: Position -> Value -> Value -> Value
+green_replace [] by _ = by
+green_replace (p : ps) by (VRigid (Right s) sp a) = VRigid (Right s) sp' a
+  where
+    sp' = Seq.update (fromIntegral p) (green_replace ps by (fromJust $ Seq.lookup (fromIntegral p) sp)) sp
+green_replace _ _ _ = error "broken invariant"

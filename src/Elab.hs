@@ -718,11 +718,11 @@ append_parse_tc_toplvl filename ctx contents =
 parse_tc_toplvl :: String -> String -> ElabCtx
 parse_tc_toplvl filename = append_parse_tc_toplvl filename empty_ctx
 
-append_input_str :: ElabCtx -> String -> ElabCtx
-append_input_str = append_parse_tc_toplvl "input"
+append_input_str :: ElabCtx -> [String] -> ElabCtx
+append_input_str ctx = append_parse_tc_toplvl "input" ctx . unlines
 
-input_str :: String -> ElabCtx
-input_str = parse_tc_toplvl "input"
+input_str :: [String] -> ElabCtx
+input_str = parse_tc_toplvl "input" . unlines
 
 append_input_file :: ElabCtx -> String -> IO ElabCtx
 append_input_file ctx filename = do

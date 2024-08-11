@@ -15,6 +15,7 @@ import qualified Text.Regex as Regex
 
 import Elab
 import Order
+import Superpos
 
 -- TODO: likely not needed
 instance Arbitrary Name where
@@ -95,17 +96,33 @@ church_arith_test (AAdd ae1 ae2) = Const "add" :@ church_arith_test ae1 :@ churc
 church_arith_test (AMul ae1 ae2) = Const "mul" :@ church_arith_test ae1 :@ church_arith_test ae2
 church_nat :: Natural -> Term
 church_nat i = runTC_partial $ check nat_prelude (RLam "N" $ RLam "s" $ RLam "z" $ iterate (RVar "s" `RApp`) (RVar "z") `List.genericIndex` i) (get_const_def_partial nat_prelude "Nat")
-
 nat_prelude :: ElabCtx
 nat_prelude =
-  input_str $
-    unlines
-      [ "let Nat  : * = forall N:*. (N -> N) -> N -> N;"
-      , "let succ : Nat -> Nat = \\a N s z. s (a N s z);"
-      , "let add  : Nat -> Nat -> Nat = \\a b N s z. a N s (b N s z);"
-      , "let mul  : Nat -> Nat -> Nat = \\a b N s z. a N (b N s) z;"
-      , "let exp  : Nat -> Nat -> Nat = \\a b N. b (N -> N) (a N);"
-      ]
+  input_str
+    [ "let Nat  : * = forall N:*. (N -> N) -> N -> N;"
+    , "let succ : Nat -> Nat = \\a N s z. s (a N s z);"
+    , "let add  : Nat -> Nat -> Nat = \\a b N s z. a N s (b N s z);"
+    , "let mul  : Nat -> Nat -> Nat = \\a b N s z. a N (b N s) z;"
+    , "let exp  : Nat -> Nat -> Nat = \\a b N. b (N -> N) (a N);"
+    ]
+
+green_test_ctx =
+  input_str
+    [ "free 0 : *;"
+    , "free 1 : *;"
+    , "free 2 : *;"
+    , "free 3 : *;"
+    , "free 9 : ?0 -> ?1;"
+    , "const f : ?0 -> ?1 -> ?2 -> ?3;"
+    , "const g : ?0 -> ?1;"
+    , "const a : *;"
+    , "const b : *;"
+    , "const ty : *;"
+    , "const h : ?0 -> ?1 -> ?2;"
+    , "const c : *;"
+    ]
+green_test_tm = Const "f" :@ (Const "g" :@ Const "a") :@ (Free 9 :@ Const "b") :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
+green_test_val = eval green_test_ctx green_test_tm
 
 spec :: IO ()
 spec = hspec do
@@ -127,6 +144,12 @@ spec = hspec do
       mapM_ (\(expected, tval) -> strip_ansi (show tval) `shouldBe` expected) pp_term_test
   describe "elab reduction" do
     prop "random church num expression" $ \ae -> let num = interp_arith_test ae in within 1000000 $ abe_conv nat_prelude (eval nat_prelude $ church_nat num) (eval nat_prelude $ church_arith_test ae)
+  describe "core calculus" do
+    it "green positions" do
+      map fst (green_subtms green_test_val) `shouldBe` [[], [0], [0, 0], [1], [2]]
+    it "green context replace" do
+      quote green_test_ctx (green_replace [0, 0] (eval green_test_ctx $ Const "f" :@ Free 9) green_test_val)
+        `shouldBe` Const "f" :@ (Const "g" :@ (Const "f" :@ Free 9)) :@ (Free 9 :@ Const "b") :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
 
 -- temporary helper to examine differences between functions on terms
 -- newtype DiffTerm = DiffTerm Term
