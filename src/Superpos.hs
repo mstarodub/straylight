@@ -5,7 +5,6 @@ module Superpos where
 import Data.Foldable
 import qualified Data.List as List
 import Data.Maybe
-import Data.Sequence (Seq (..))
 import qualified Data.Sequence as Seq
 import Numeric.Natural
 
@@ -230,3 +229,13 @@ occurs_deeply ctx m (Cl cl) = any go cl
     occ_free deep (VRigid _ sp _) = any (occ_free deep) sp
     occ_free _ (VFlex _ sp _) = any (occ_free True) sp
     occ_free _ _ = False
+
+-- simplified, complete condition (3). source: priv. comm. with Bentkamp
+varcond :: Value -> Literal -> Substitution -> Bool
+-- tσ is a λ-abstraction
+varcond (VFree _ _) (t :≈ _) sig | VLam _ _ _ <- apply_subst sig t = True
+-- OR t'σ is a λ-abstraction
+varcond (VFree _ _) (_ :≈ t') sig | VLam _ _ _ <- apply_subst sig t' = True
+-- OR u is not a variable
+varcond _ (_ :≈ _) _ = True
+varcond _ _ _ = error "imposible"
