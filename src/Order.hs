@@ -118,16 +118,17 @@ get_fof_tail :: FOFTerm -> [FOFTerm]
 get_fof_tail (FOFApp t1 t2) = get_fof_tail t1 <> [t2]
 get_fof_tail _ = []
 
-get_ho_head :: Term -> Term
-get_ho_head (t1 :@ _) = get_ho_head t1
-get_ho_head t = t
+get_hotm_head :: Term -> Term
+get_hotm_head (t1 :@ _) = get_hotm_head t1
+get_hotm_head t = t
 
-has_ho_freevars :: Term -> Bool
-has_ho_freevars (Free _) = True
-has_ho_freevars (Pi _ a b) = has_ho_freevars a || has_ho_freevars b
-has_ho_freevars (ALam _ a b) = has_ho_freevars a || has_ho_freevars b
-has_ho_freevars (t1 :@ t2) = has_ho_freevars t1 || has_ho_freevars t2
-has_ho_freevars _ = False
+has_hotm_freevars :: Term -> Bool
+has_hotm_freevars (Free _) = True
+has_hotm_freevars (Pi _ a b) = has_hotm_freevars a || has_hotm_freevars b
+-- TODO: the type of the ALam is also scanned. is that correct?
+has_hotm_freevars (ALam _ a b) = has_hotm_freevars a || has_hotm_freevars b
+has_hotm_freevars (t1 :@ t2) = has_hotm_freevars t1 || has_hotm_freevars t2
+has_hotm_freevars _ = False
 
 -- trivially admissible weight function.
 -- an example heuristic could be: sorts > _lam > bound vars > _pi > consts
@@ -151,7 +152,7 @@ o = mk_fof 0 . flip evalState (-1) . go
   where
     go :: Term -> State Metavar Term
     -- negative free vars do not occur in higher-order terms, so this trick guarantees freshness
-    go t | is_fluid t = do
+    go t | is_fluid_tm t = do
       cur_free <- get
       put $ cur_free - 1
       pure $ Free cur_free
@@ -181,10 +182,10 @@ o = mk_fof 0 . flip evalState (-1) . go
 -- t fluid ⟺ (1) t = Y uₙ where n > 0 or (2) t = λ-abstr. and ∃σ substitution. σt is not a λ-abstr.
 -- this "overapproximation" for case (2) (t = λ-abstr. and contains a metavar) is complete
 -- [source: Superpos. with lambdas, page 39]
-is_fluid :: Term -> Bool
-is_fluid (t :@ _) | Free _ <- get_ho_head t = True
-is_fluid (ALam _ _ b) = has_ho_freevars b
-is_fluid _ = False
+is_fluid_tm :: Term -> Bool
+is_fluid_tm (t :@ _) | Free _ <- get_hotm_head t = True
+is_fluid_tm (ALam _ _ b) = has_hotm_freevars b
+is_fluid_tm _ = False
 
 -- future improvement with η-long stable TO: here is how it could look like on values
 -- currently we can't do this because we need to eta reduce before encoding,

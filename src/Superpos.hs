@@ -116,6 +116,9 @@ ext_ax =
 -- different convention compared to the paper. we start at 0 and the list is reversed
 type Position = [Natural]
 
+-- TODO: this is likely very incorrect. the calculus assumes η-short nf everywhere, and
+--   this won't recurse under η-contractible lambdas. perhaps we can solve it with
+--   quote -> eta_reduce -> eval?
 -- TODO: we don't force here. the forcing (and passing of ctx) is getting out of hand -
 --   we need to decide precisely where in the pipeline values need to be forced
 green_subtms :: Value -> [(Position, Value)]
@@ -136,3 +139,17 @@ green_replace (p : ps) by (VRigid (Right s) sp a) = VRigid (Right s) sp' a
   where
     sp' = Seq.update (fromIntegral p) (green_replace ps by (fromJust $ Seq.lookup (fromIntegral p) sp)) sp
 green_replace _ _ _ = error "broken invariant"
+
+-- same overapproximation as in the term order
+is_fluid_val :: Value -> Bool
+is_fluid_val (VFlex _ _ _) = True
+is_fluid_val (VLam _ _ b) = has_val_freevars (b dummy_conv_val_unsafe)
+  where
+    -- TODO: again, the nested types of lambdas found in the body are also scanned. is that correct?
+    has_val_freevars :: Value -> Bool
+    has_val_freevars (VFlex _ _ _) = True
+    has_val_freevars (VRigid _ sp _) = any has_val_freevars sp
+    has_val_freevars (VLam _ a bty) = has_val_freevars a || has_val_freevars (bty dummy_conv_val_unsafe)
+    has_val_freevars (VPi _ a bty) = has_val_freevars a || has_val_freevars (bty dummy_conv_val_unsafe)
+    has_val_freevars (VSort _) = False
+is_fluid_val _ = False
