@@ -5,7 +5,6 @@ import Control.Monad
 import Control.Monad.State
 import Data.Bifunctor
 import Data.Foldable
-import qualified Data.IntMap as IntMap
 import qualified Data.List as List
 import Data.Maybe
 import Data.Semigroup
@@ -66,9 +65,9 @@ newtype UnifConstraint = Uc (Value, Value)
 newtype UnifConstraints = Ucs [UnifConstraint]
 
 -- unoriented equality for constraints
-eq_uc :: ElabCtx -> UnifConstraint -> UnifConstraint -> Bool
-eq_uc ctx (Uc (c1, c2)) (Uc (d1, d2)) =
-  let cmp = abe_conv ctx
+eq_uc :: Substitution -> UnifConstraint -> UnifConstraint -> Bool
+eq_uc sig (Uc (c1, c2)) (Uc (d1, d2)) =
+  let cmp = abe_conv sig
   in c1 `cmp` d1 && c2 `cmp` d2
       || c1 `cmp` d2 && c2 `cmp` d1
 
@@ -79,14 +78,14 @@ type UnifNode = Either LeafTy NodeState
 data LeafTy = Unifier ElabCtx | Deadend
 type NodeState = (UnifConstraints, ElabCtx)
 
-get_n_unif :: Int -> ElabCtx -> UnifConstraint -> [Substitutions]
+get_n_unif :: Int -> ElabCtx -> UnifConstraint -> [Substitution]
 get_n_unif n ctx uc = let Stream ufs = csu ctx uc in take n ufs
 
 -- CSU(t1, t2) === set of unifiers for t1, t2 U. ∀o unifier of t1, t2. ∃u∈U, substitution s. o ⊆ u
 -- TODO: problem with this definition. why s needed here? can trivially pick s = o, then U = {id}
 -- unifier: substitution s that makes terms t1, t2 abe-equiv: s t1 ↔(abe) s t2
 -- MGU = one element CSU
-csu :: ElabCtx -> UnifConstraint -> Stream Substitutions
+csu :: ElabCtx -> UnifConstraint -> Stream Substitution
 csu ctx uc = extr_substs . unify $ [Right (Ucs [uc], ctx)]
   where
     extr_substs (Stream xs) = Stream [ct.metactx | Left (Unifier ct) <- xs]
@@ -107,7 +106,7 @@ unifstep (Stream (Right (Ucs ucs, ctx) : tree)) = foldMap f ucs <> unifstep (Str
     f :: UnifConstraint -> Stream UnifNode
     f selected = transition (Ucs $ selected `delete_uc` ucs, ctx) selected
     delete_uc :: UnifConstraint -> [UnifConstraint] -> [UnifConstraint]
-    delete_uc = List.deleteBy (eq_uc ctx)
+    delete_uc = List.deleteBy (eq_uc ctx.metactx)
 -- prune failures
 unifstep (Stream (Left Deadend : tree)) = unifstep $ Stream tree
 -- preserve successes
@@ -118,14 +117,14 @@ transition :: NodeState -> UnifConstraint -> Stream UnifNode
 -- normalize_b + dereference
 transition (Ucs e, ctx) c =
   let Uc (sel1, sel2) = strip_abstr ctx c
-  in go $ Uc (force ctx sel1, force ctx sel2)
+  in go $ Uc (force ctx.metactx sel1, force ctx.metactx sel2)
   where
     go :: UnifConstraint -> Stream UnifNode
     -- fail
     go (Uc (VRigid a _ _, VRigid b _ _)) | a /= b = uf_trace ctx ["rule fail"] $ [Left Deadend]
     go (Uc (s, t))
       -- delete
-      | abe_conv ctx s t = uf_trace ctx ["rule delete", show_uc ctx $ Uc (s, t)] $ [Right (Ucs e, dbg_incdepth ctx)]
+      | abe_conv ctx.metactx s t = uf_trace ctx ["rule delete", show_uc ctx $ Uc (s, t)] $ [Right (Ucs e, dbg_incdepth ctx)]
       -- decompose + bind
       | otherwise =
           uf_trace ctx ["rule decomp/bind", show_uc ctx $ Uc (s, t), show ctx] $
@@ -212,8 +211,8 @@ strip_abstr :: ElabCtx -> UnifConstraint -> UnifConstraint
 strip_abstr ctx = go ctx.lvl
   where
     go l (Uc (VLam _ a b1, VLam _ _ b2)) = go (l + 1) $ Uc (b1 $ VBound l a, b2 $ VBound l a)
-    go l (Uc ((VLam _ a b), v)) = go (l + 1) $ Uc (b $ VBound l a, value_app ctx v $ VBound l a)
-    go l (Uc (v, (VLam _ a b))) = go (l + 1) $ Uc (value_app ctx v $ VBound l a, b $ VBound l a)
+    go l (Uc ((VLam _ a b), v)) = go (l + 1) $ Uc (b $ VBound l a, value_app ctx.metactx v $ VBound l a)
+    go l (Uc (v, (VLam _ a b))) = go (l + 1) $ Uc (value_app ctx.metactx v $ VBound l a, b $ VBound l a)
     go _ (Uc (v1, v2)) = Uc (v1, v2)
 
 subst_unless :: ElabCtx -> Metavar -> EmergedFrom -> Stream ElabCtx -> Stream ElabCtx
@@ -232,9 +231,9 @@ subseqs = drop 1 . filterM (const [True, False])
 -- and the context it should be substituted in - return the new context containing the substitution
 -- second to last arg is for debug printing
 modif_metactx :: Metavar -> Value -> Term -> String -> ElabCtx -> ElabCtx
-modif_metactx (Metavar m) mty replacee dbg_lastbind ctx =
+modif_metactx m mty replacee dbg_lastbind ctx =
   ctx
-    { metactx = IntMap.insert m (mty, Substituted $ eval ctx replacee) ctx.metactx
+    { metactx = update_subst ctx.metactx m (mty, Substituted $ eval ctx replacee)
     , dbg_unif = second (const dbg_lastbind) ctx.dbg_unif
     }
 
@@ -257,11 +256,11 @@ gen_apps :: Int -> (Int -> Value) -> Int -> State ElabCtx [Term]
 gen_apps 0 _ _ = pure []
 gen_apps m genty n = do
   ctx <- get
-  let Metavar nm = fresh_meta ctx
+  let nm = fresh_meta ctx.metactx
   let mty = genty (m - 1)
-  put $ ctx{metactx = IntMap.insert nm (mty, Fresh Other) ctx.metactx}
+  put $ ctx{metactx = update_subst ctx.metactx nm (mty, Fresh Other)}
   rest <- gen_apps (m - 1) genty n
-  let hd = Free (Metavar nm)
+  let hd = Free nm
   let apps = foldl (:@) hd $ fmap (Bound . Idx) ([n - 1, n - 2 .. 0] :: [Int])
   pure (apps : rest)
 
@@ -276,14 +275,14 @@ ident_bind ctx f g =
     ((fi_apps, gi_apps), newctx) = runState (liftM2 (,) gen_fi_apps gen_gj_apps) ctx'
     (h, ctx') =
       let
-        Metavar mh = fresh_meta ctx
+        mh = fresh_meta ctx.metactx
         hty = foldr construct_arr_val beta (f_alphas <> g_gammas)
       in
-        (Free (Metavar mh), ctx{metactx = IntMap.insert mh (hty, Fresh Ident) ctx.metactx})
+        (Free mh, ctx{metactx = update_subst ctx.metactx mh (hty, Fresh Ident)})
     (f_ty, g_ty) = (get_free_ty_partial ctx f, get_free_ty_partial ctx g)
     f_tys = destruct_arr_val f_ty
     g_tys = destruct_arr_val g_ty
-    (f_alphas, g_gammas) = assert (abe_conv ctx (last f_tys) (last g_tys)) $ (init f_tys, init g_tys)
+    (f_alphas, g_gammas) = assert (abe_conv ctx.metactx (last f_tys) (last g_tys)) $ (init f_tys, init g_tys)
     beta = last f_tys
     n = length f_alphas
     m = length g_gammas
@@ -304,7 +303,7 @@ imit_bind ctx f g =
     (f_ty, g_ty) = (get_free_ty_partial ctx f, get_const_ty_partial ctx g)
     f_tys = destruct_arr_val f_ty
     g_tys = destruct_arr_val g_ty
-    (f_alphas, g_gammas) = assert (abe_conv ctx (last f_tys) (last g_tys)) (init f_tys, init g_tys)
+    (f_alphas, g_gammas) = assert (abe_conv ctx.metactx (last f_tys) (last g_tys)) (init f_tys, init g_tys)
     n = length f_alphas
     m = length g_gammas
     gen_fi_apps = gen_apps m (\i -> mk_pi (g_gammas !! i) f_alphas) n
@@ -326,10 +325,10 @@ elim_bind ctx f =
         xjs = fmap (Bound . Idx) subs
         (g, newctx) =
           let
-            Metavar mg = fresh_meta ctx
+            mg = fresh_meta ctx.metactx
             gty = foldr construct_arr_val beta (fmap (f_alphas !!) subs)
           in
-            (Free (Metavar mg), ctx{metactx = IntMap.insert mg (gty, Fresh Elim) ctx.metactx})
+            (Free mg, ctx{metactx = update_subst ctx.metactx mg (gty, Fresh Elim)})
 
 huet_jp_bind :: (Value -> Bool) -> ElabCtx -> Metavar -> Stream ElabCtx
 huet_jp_bind prop ctx f = Stream . catMaybes $ fmap modif_for_selected (zip [0 ..] (filter prop f_alphas))
@@ -341,7 +340,7 @@ huet_jp_bind prop ctx f = Stream . catMaybes $ fmap modif_for_selected (zip [0 .
     n = length f_alphas
     modif_for_selected :: (Int, Value) -> Maybe ElabCtx
     modif_for_selected (ai_idx, ai) =
-      if abe_conv ctx beta (last a_tys)
+      if abe_conv ctx.metactx beta (last a_tys)
         then Just (modif_metactx f f_ty f_replaceby "huet/jp" newctx)
         else Nothing
       where
@@ -387,10 +386,10 @@ iter_bind prop ctx f =
         gen_deltas :: Int -> State ElabCtx [Value]
         gen_deltas j = replicateM j $ do
           ct <- get
-          let Metavar nm = fresh_meta ct
+          let nm = fresh_meta ct.metactx
           let mty = VSort Star
-          put $ ctx{metactx = IntMap.insert nm (mty, Fresh Dummy) ctx.metactx}
-          pure $ VFree (Metavar nm) mty
+          put $ ctx{metactx = update_subst ctx.metactx nm (mty, Fresh Dummy)}
+          pure $ VFree nm mty
         modif_for_selected :: (Int, Value) -> ElabCtx
         modif_for_selected (ai_idx, ai) = modif_metactx f f_ty f_replaceby "iter" newctx
           where
@@ -404,11 +403,11 @@ iter_bind prop ctx f =
             m = length a_gammas
             (h, ctx'') =
               let
-                Metavar mh = fresh_meta ctx'
+                mh = fresh_meta ctx'.metactx
                 deltas_to_b2 = foldr construct_arr_val beta2 deltas
                 hty = foldr construct_arr_val beta1 (f_alphas <> [deltas_to_b2])
               in
-                (Free (Metavar mh), ctx'{metactx = IntMap.insert mh (hty, Fresh Other) ctx'.metactx})
+                (Free mh, ctx'{metactx = update_subst ctx'.metactx mh (hty, Fresh Other)})
             gen_gj_apps = gen_apps m (\j -> mk_pi (a_gammas !! j) (f_alphas <> deltas)) (n + d)
 
 construct_arr_val :: Value -> Value -> Value

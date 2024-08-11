@@ -138,7 +138,7 @@ spec = hspec do
     prop "random church num expression" $ \ae ->
       let num = interp_arith_test ae
       in within 1000000 $
-          abe_conv nat_prelude (eval nat_prelude $ church_nat num) (eval nat_prelude $ church_arith_test ae)
+          abe_conv nat_prelude.metactx (eval nat_prelude $ church_nat num) (eval nat_prelude $ church_arith_test ae)
   describe "core calculus" do
     it "green positions" do
       map fst (green_subtms green_test_val) `shouldBe` [[], [0], [0, 0], [1], [2]]

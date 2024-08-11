@@ -17,14 +17,14 @@ infix 4 :≉
 infix 4 :≈
 
 -- unoriented equality for literals
-eq_lit :: ElabCtx -> Literal -> Literal -> Bool
-eq_lit ctx l r = case (l, r) of
+eq_lit :: Substitution -> Literal -> Literal -> Bool
+eq_lit sig l r = case (l, r) of
   (Pos l', Pos r') -> go l' r'
   (Neg l', Neg r') -> go l' r'
   (_, _) -> False
   where
     (c1, c2) `go` (d1, d2) = c1 `cmp` d1 && c2 `cmp` d2 || c1 `cmp` d2 && c2 `cmp` d1
-    cmp = abe_conv ctx
+    cmp = abe_conv sig
 
 show_lit :: ElabCtx -> Literal -> String
 show_lit ctx (Pos (l, r)) = show_val ctx l <> "≈" <> show_val ctx r
@@ -89,7 +89,7 @@ bool_axioms =
     [a_, x_, y_, xa_, ya_, yatobool_] = get_free_def_partial bool_prelude `map` [0 .. 5]
     [t_, f_, not_, and_, or_, impl_, equiv_, forall_, exists_, eq_, hchoice_] =
       get_const_def_partial bool_prelude `map` ["t", "f", "not", "and", "or", "impl", "equiv", "∀", "∃", "eq", "hchoice"]
-    va = value_app bool_prelude
+    va = value_app bool_prelude.metactx
 
 base_prelude :: ElabCtx
 base_prelude =
@@ -111,7 +111,7 @@ ext_ax =
   where
     [a_, b_, y_, z_] = get_free_def_partial base_prelude `map` [6 .. 9]
     funext_ = get_const_def_partial base_prelude "funext"
-    va = value_app base_prelude
+    va = value_app base_prelude.metactx
 
 -- different convention compared to the paper. we start at 0 and the list is reversed
 type Position = [Natural]

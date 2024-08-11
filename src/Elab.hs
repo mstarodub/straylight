@@ -142,7 +142,7 @@ data EmergedFrom = Elim | Ident | Dummy | Skolem | User | Other
 data MetaStatus = Substituted Value | Fresh EmergedFrom
   deriving (Show)
 
-type Substitutions = IntMap (Value, MetaStatus)
+type Substitution = IntMap (Value, MetaStatus)
 
 -- tenv is the typing context for bound variables, name-keyed (names come from raw terms)
 -- lenv contains values (for eval)
@@ -155,14 +155,10 @@ data ElabCtx = ElabCtx
   , lenv :: [Value]
   , lvl :: Lvl
   , toplvl :: Ctx (Value, Value)
-  , metactx :: Substitutions
+  , metactx :: Substitution
   , dbg_unif :: (Integer, String)
   , srcpos :: SourcePos
   }
-
-already_defined :: ElabCtx -> Either Metavar Name -> Bool
-already_defined ctx (Left (Metavar m)) = m `IntMap.member` ctx.metactx
-already_defined ctx (Right s) = isRight $ lookup_ctx ctx.toplvl s
 
 -- add a bound variable
 bind_var :: ElabCtx -> (Name, Value) -> ElabCtx
@@ -203,6 +199,13 @@ get_const_def_partial ctx n = fst $ lookup_ctx_partial ctx.toplvl n
 get_const_ty_partial :: ElabCtx -> Name -> Value
 get_const_ty_partial ctx n = snd $ lookup_ctx_partial ctx.toplvl n
 
+get_free_def_partial :: ElabCtx -> Metavar -> Value
+get_free_def_partial ctx m = VFree m $ get_free_ty_partial ctx m
+
+already_defined :: ElabCtx -> Either Metavar Name -> Bool
+already_defined ctx (Left (Metavar m)) = m `IntMap.member` ctx.metactx
+already_defined ctx (Right s) = isRight $ lookup_ctx ctx.toplvl s
+
 -- TODO: not needed? actually maybe it is during eval
 get_free_ty :: ElabCtx -> Metavar -> Either String Value
 get_free_ty ctx (Metavar m) = case fst <$> ctx.metactx IntMap.!? m of
@@ -214,13 +217,19 @@ get_free_ty_partial ctx (Metavar m) = fst $ ctx.metactx IntMap.! m
 get_free_status_partial :: ElabCtx -> Metavar -> MetaStatus
 get_free_status_partial ctx (Metavar m) = snd $ ctx.metactx IntMap.! m
 
-get_free_def_partial :: ElabCtx -> Metavar -> Value
-get_free_def_partial ctx m = VFree m $ get_free_ty_partial ctx m
+update_subst :: Substitution -> Metavar -> (Value, MetaStatus) -> Substitution
+update_subst sig (Metavar m) (mty, replacee) = IntMap.insert m (mty, replacee) sig
+
+get_subst :: Substitution -> Metavar -> MetaStatus
+get_subst sig (Metavar m) = snd $ sig IntMap.! m
+
+id_subst :: Substitution
+id_subst = IntMap.empty
 
 -- next available metavar counter
 -- caller is responsible for adding the entry!
-fresh_meta :: ElabCtx -> Metavar
-fresh_meta ctx = Metavar $ maybe 0 ((+ 1) . fst) (IntMap.lookupMax ctx.metactx)
+fresh_meta :: Substitution -> Metavar
+fresh_meta sig = Metavar $ maybe 0 ((+ 1) . fst) (IntMap.lookupMax sig)
 
 get_arity :: Value -> Natural
 get_arity (VPi _ _ b) = 1 + get_arity (b dummy_conv_val_unsafe)
@@ -231,52 +240,52 @@ dummy_conv_val_unsafe = VBound (-1) (VSort Box)
 
 -- force a thunk after a substitution up to hnf. cannot pattern match on values otherwise
 -- TODO: during forcing and in eval - do we delete the substituted meta from the ctx and return a new one?
-force :: ElabCtx -> Value -> Value
-force ctx (VFlex m sp _)
-  | Substituted v <- get_free_status_partial ctx m =
-      --       trace ("forcing " <> show_val ctx (VFlex m sp)) $
-      force ctx (value_app_spine ctx v sp)
+force :: Substitution -> Value -> Value
+force sig (VFlex m sp _)
+  | Substituted v <- get_subst sig m =
+      force sig (value_app_spine sig v sp)
 force _ v = v
 
-deep_force :: ElabCtx -> Value -> Value
-deep_force ctx (VFlex m sp _)
-  | Substituted v <- get_free_status_partial ctx m = deep_force ctx (value_app_spine ctx v sp)
-deep_force ctx (VRigid r sp a) = VRigid r (fmap (deep_force ctx) sp) a
-deep_force ctx (VLam s va vb) = VLam s (deep_force ctx va) $ deep_force ctx . vb
-deep_force ctx (VPi s v vb) = VPi s (deep_force ctx v) $ deep_force ctx . vb
-deep_force _ v = v
+-- expensive
+apply_subst :: Substitution -> Value -> Value
+apply_subst sig (VFlex m sp _)
+  | Substituted v <- get_subst sig m = apply_subst sig (value_app_spine sig v sp)
+apply_subst sig (VRigid r sp a) = VRigid r (fmap (apply_subst sig) sp) a
+apply_subst sig (VLam s va vb) = VLam s (apply_subst sig va) $ apply_subst sig . vb
+apply_subst sig (VPi s v vb) = VPi s (apply_subst sig v) $ apply_subst sig . vb
+apply_subst _ v = v
 
 -- where the computation happens
-value_app :: ElabCtx -> Value -> Value -> Value
+value_app :: Substitution -> Value -> Value -> Value
 value_app _ (VLam _ _ body) v = body v
-value_app ctx (VFlex s spine a) v = VFlex s (spine :|> v) (ty_app ctx a v)
-value_app ctx (VRigid x spine a) v = VRigid x (spine :|> v) (ty_app ctx a v)
+value_app sig (VFlex s spine a) v = VFlex s (spine :|> v) (ty_app sig a v)
+value_app sig (VRigid x spine a) v = VRigid x (spine :|> v) (ty_app sig a v)
 value_app _ _ _ = error "impossible"
 
-ty_app :: ElabCtx -> Value -> Value -> Value
-ty_app ctx a t = case force ctx a of
+ty_app :: Substitution -> Value -> Value -> Value
+ty_app sig a t = case force sig a of
   VPi _ _ b -> b t
   _ -> error "impossible"
 
 -- apply single value to a spine
-value_app_spine :: ElabCtx -> Value -> Spine -> Value
+value_app_spine :: Substitution -> Value -> Spine -> Value
 value_app_spine _ v Empty = v
-value_app_spine ctx v (spine :|> s) = value_app ctx (value_app_spine ctx v spine) s
+value_app_spine sig v (spine :|> s) = value_app sig (value_app_spine sig v spine) s
 
 -- normal form evaluation
 eval :: ElabCtx -> Term -> Value
 eval ctx (Const v) = get_const_def_partial ctx v
-eval ctx (Free m) = case get_free_status_partial ctx m of
+eval ctx (Free m) = case get_subst ctx.metactx m of
   Substituted v -> v
   Fresh _ -> VFree m (get_free_ty_partial ctx m)
 eval ctx (Bound i) = ctx.lenv !!! i
 eval ctx (ALam s a body) = VLam s (eval ctx a) (\x -> eval (extend_lenv ctx x) body)
 eval ctx (Pi ms t1 t2) = VPi ms (eval ctx t1) (\x -> eval (extend_lenv ctx x) t2)
-eval ctx (e1 :@ e2) = value_app ctx (eval ctx e1) (eval ctx e2)
+eval ctx (e1 :@ e2) = value_app ctx.metactx (eval ctx e1) (eval ctx e2)
 eval _ (Sort s) = VSort s
 
 quote :: ElabCtx -> Value -> Term
-quote ctx v = case force ctx v of
+quote ctx v = case force ctx.metactx v of
   VFlex s spine _ -> quote_spine (Free s) spine
   VRigid (Left x) spine _ -> quote_spine (Bound $ lvl2idx ctx.lvl x) spine
   VRigid (Right s) spine _ -> quote_spine (Const s) spine
@@ -349,7 +358,7 @@ tc_trace2 ss =
   trace ("TRACE2 " <> unwords ss) $ () `seq` pure ()
 
 mk_ctx :: SourcePos -> [Raw] -> Tc ElabCtx
-mk_ctx pos = build_ctx (ElabCtx [] [] 0 [] IntMap.empty (0, "") pos)
+mk_ctx pos = build_ctx (ElabCtx [] [] 0 [] id_subst (0, "") pos)
 
 grow_ctx :: SourcePos -> ElabCtx -> [Raw] -> Tc ElabCtx
 grow_ctx pos ctx = build_ctx ctx{srcpos = pos}
@@ -430,7 +439,7 @@ check ctx (RLam s body) (VPi _ vt vf) = do
 check ctx r vty_want = do
   tc_trace ["check: other", show r, show_val ctx vty_want]
   (tm, vty_have) <- infer ctx r
-  unless (abe_conv ctx vty_want vty_have) $
+  unless (abe_conv ctx.metactx vty_want vty_have) $
     report ctx $
       "expected type " <> show_val ctx vty_want <> " - got " <> show_val ctx vty_have
   pure tm
@@ -448,8 +457,8 @@ check_rule ctx (x1, x2) = report ctx $ "not a sort: " <> show (show_val ctx x1, 
 -- we can do fast conversion checking on values directly
 -- use special conversion variables with fresh names by abusing the VBound constructor together with negative levels
 -- these conversion variables are invalid outside of and only used for conversion checking
-abe_conv :: ElabCtx -> Value -> Value -> Bool
-abe_conv ctx = go (-1)
+abe_conv :: Substitution -> Value -> Value -> Bool
+abe_conv sig = go (-1)
   where
     go :: Lvl -> Value -> Value -> Bool
     go _ (VSort s1) (VSort s2) = s1 == s2
@@ -458,8 +467,8 @@ abe_conv ctx = go (-1)
     go l (VRigid x1 sp1 _) (VRigid x2 sp2 _) = x1 == x2 && go_spine l sp1 sp2
     go l (VPi _ a1 b1) (VPi _ a2 b2) = go l a1 a2 && go (l - 1) (b1 $ VBound l a1) (b2 $ VBound l a1)
     -- syntax-directed eta equality cases
-    go l v (VLam _ a b) = go (l - 1) (value_app ctx v $ VBound l a) (b $ VBound l a)
-    go l (VLam _ a b) v = go (l - 1) (b $ VBound l a) (value_app ctx v $ VBound l a)
+    go l v (VLam _ a b) = go (l - 1) (value_app sig v $ VBound l a) (b $ VBound l a)
+    go l (VLam _ a b) v = go (l - 1) (b $ VBound l a) (value_app sig v $ VBound l a)
     go _ _ _ = False
     go_spine :: Lvl -> Spine -> Spine -> Bool
     go_spine _ Empty Empty = True
@@ -531,7 +540,7 @@ pp_metastatus :: ElabCtx -> MetaStatus -> String
 pp_metastatus _ (Fresh from) = show from
 pp_metastatus ctx (Substituted v) = "Substituted " <> show_val ctx v
 
-pp_substitutions :: ElabCtx -> Substitutions -> String
+pp_substitutions :: ElabCtx -> Substitution -> String
 pp_substitutions ctx =
   IntMap.foldMapWithKey
     \key (val, status) ->
