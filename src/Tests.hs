@@ -16,11 +16,6 @@ import Elab
 import Order
 import Superpos
 
-instance Arbitrary Name where
-  arbitrary = Name . List.singleton <$> elements ['w' .. 'z']
-instance Arbitrary Metavar where
-  arbitrary = Metavar <$> elements [0 .. 4]
-
 -- inefficient. should use smallcheck (enumerative pbt)
 -- usage example: gen_setof_x @WTTerm 5
 gen_setof_x :: (Arbitrary a, Ord a, Num b, Eq b) => b -> IO (Set a)
@@ -32,15 +27,6 @@ gen_setof_x = go Set.empty
       if term `Set.member` set
         then go set k
         else go (Set.insert term set) (k - 1)
-
--- TODO: well-typed terms + contexts with types constructed from a set of base types
-data WTTerm = WT Term ElabCtx
-instance Arbitrary WTTerm where
-  -- WT <$> arbitrary `suchThat` (isRight . infer_noctx [])
-  arbitrary = do
-    let basetypes :: [(Name, Value)] = [("Bool", VSort Star), ("Nat", VSort Star)]
-    let _ctx = foldl define_const empty_ctx basetypes
-    pure undefined
 
 strip_ansi :: String -> String
 strip_ansi s = Regex.subRegex re s ""
