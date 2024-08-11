@@ -5,12 +5,20 @@ module Superpos where
 import Data.Foldable
 import qualified Data.List as List
 import Data.Maybe
+import Data.Sequence (Seq (..))
 import qualified Data.Sequence as Seq
 import Numeric.Natural
 
 import Elab
+import Order
 
-data Literal = Pos (Value, Value) | Neg (Value, Value)
+data Literal' a = Pos (a, a) | Neg (a, a)
+  deriving (Functor)
+lfst (Pos (x, _)) = x
+lfst (Neg (x, _)) = x
+lsnd (Pos (_, y)) = y
+lsnd (Neg (_, y)) = y
+type Literal = Literal' Value
 pattern a :≉ b = Neg (a, b)
 pattern a :≈ b = Pos (a, b)
 infix 4 :≉
@@ -33,6 +41,9 @@ show_lit ctx (Neg (l, r)) = show_val ctx l <> "≉" <> show_val ctx r
 -- plain lists are fine here, since clause sets are commonly not large
 -- duplicates should be deleted
 newtype Clause = Cl [Literal]
+
+map_clause :: (Literal -> Literal) -> Clause -> Clause
+map_clause f (Cl cl) = Cl $ f `map` cl
 
 show_cl :: ElabCtx -> Clause -> String
 show_cl _ (Cl []) = "⊥"
@@ -121,6 +132,7 @@ type Position = [Natural]
 --   quote -> eta_reduce -> eval?
 -- TODO: we don't force here. the forcing (and passing of ctx) is getting out of hand -
 --   we need to decide precisely where in the pipeline values need to be forced
+--   places to check: comparison (order), ...
 green_subtms :: Value -> [(Position, Value)]
 green_subtms = go []
   where
@@ -153,3 +165,47 @@ is_fluid_val (VLam _ _ b) = has_val_freevars (b dummy_conv_val_unsafe)
     has_val_freevars (VPi _ a bty) = has_val_freevars a || has_val_freevars (bty dummy_conv_val_unsafe)
     has_val_freevars (VSort _) = False
 is_fluid_val _ = False
+
+-- TODO: explain this
+cmp_lits :: Literal -> Literal -> PartialOrd
+cmp_lits lit1 lit2 = do
+  l1l2 <- ckbo (lfst lit1) (lfst lit2)
+  l1r2 <- ckbo (lfst lit1) (lsnd lit2)
+  r1l2 <- ckbo (lsnd lit1) (lfst lit2)
+  r1r2 <- ckbo (lsnd lit1) (lsnd lit2)
+  pure $ case (l1l2, l1r2, r1l2, r1r2, sign lit1 lit2) of
+    (GT, GT, _, _, _) -> GT
+    (_, _, GT, GT, _) -> GT
+    (LT, _, LT, _, _) -> LT
+    (_, LT, _, LT, _) -> LT
+    (GT, _, _, GT, _) -> GT
+    (LT, _, _, LT, _) -> LT
+    (_, GT, GT, _, _) -> GT
+    (_, LT, LT, _, _) -> LT
+    (EQ, _, _, c, EQ) -> c
+    (_, EQ, c, _, EQ) -> c
+    (_, c, EQ, _, EQ) -> c
+    (c, _, _, EQ, EQ) -> c
+    (EQ, _, _, EQ, _) -> EQ
+    (_, EQ, EQ, _, _) -> EQ
+    (EQ, _, _, _, c) -> c
+    (_, EQ, _, _, c) -> c
+    (_, _, EQ, _, c) -> c
+    (_, _, _, EQ, c) -> c
+  where
+    sign (Pos _) (Pos _) = EQ
+    sign (Neg _) (Neg _) = EQ
+    sign (Neg _) (Pos _) = GT
+    sign (Pos _) (Neg _) = LT
+
+-- TODO: sig ≡ id ⟹ "we leave it implicit"?
+-- our clauses are deduplicated, but maximal ⇏ strictly maximal because there might be more than
+-- one element equal according to the order
+-- TODO: example / when is this the case?
+eligible :: Bool -> Literal -> Substitution -> Clause -> Bool
+eligible strictly l sig cl = all maximal clcompared
+  where
+    maximal = flip (elem @[]) $ [Just GT, Nothing] <> if strictly then [] else [Just EQ]
+    clcompared = cmp_lits lsig `map` clsig
+    Cl clsig = map_clause (fmap $ apply_subst sig) cl
+    lsig = apply_subst sig <$> l
