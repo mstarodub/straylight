@@ -231,11 +231,11 @@ occurs_deeply ctx m (Cl cl) = any go cl
     occ_free _ _ = False
 
 -- simplified, complete condition (3). source: priv. comm. with Bentkamp
-varcond :: Value -> Literal -> Substitution -> Bool
+varcond :: Value -> Value -> Value -> Bool
 -- tσ is a λ-abstraction
-varcond (VFree _ _) (t :≈ _) sig | VLam _ _ _ <- apply_subst sig t = True
+varcond (VFree _ _) tsig _ | VLam _ _ _ <- tsig = True
 -- OR t'σ is a λ-abstraction
-varcond (VFree _ _) (_ :≈ t') sig | VLam _ _ _ <- apply_subst sig t' = True
+varcond (VFree _ _) _ t'sig | VLam _ _ _ <- t'sig = True
 -- OR u is not a variable
-varcond _ (_ :≈ _) _ = True
-varcond _ _ _ = error "imposible"
+varcond (VFree _ _) _ _ = False
+varcond _ _ _ = True
