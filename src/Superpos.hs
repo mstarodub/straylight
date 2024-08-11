@@ -209,3 +209,24 @@ eligible strictly l sig cl = all maximal clcompared
     clcompared = cmp_lits lsig `map` clsig
     Cl clsig = map_clause (fmap $ apply_subst sig) cl
     lsig = apply_subst sig <$> l
+
+occurs_deeply :: ElabCtx -> Metavar -> Clause -> Bool
+occurs_deeply ctx m (Cl cl) = any go cl
+  where
+    go :: Literal -> Bool
+    go l =
+      occ_lam False (quote ctx $ lfst l)
+        || occ_lam False (quote ctx $ lsnd l)
+        || occ_free False (lfst l)
+        || occ_free False (lsnd l)
+    -- TODO: dependent types
+    occ_lam :: Bool -> Term -> Bool
+    occ_lam True (Free n) = m == n
+    occ_lam _ (ALam _ _ t) = occ_lam True t
+    occ_lam deep (t1 :@ t2) = occ_lam deep t1 || occ_lam deep t2
+    occ_lam _ _ = False
+    occ_free :: Bool -> Value -> Bool
+    occ_free True (VFree n _) = m == n
+    occ_free deep (VRigid _ sp _) = any (occ_free deep) sp
+    occ_free _ (VFlex _ sp _) = any (occ_free True) sp
+    occ_free _ _ = False
