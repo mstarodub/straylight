@@ -10,6 +10,7 @@ import Numeric.Natural
 
 import Elab
 import Order
+import Unif
 
 data Literal' a = Pos (a, a) | Neg (a, a)
   deriving (Functor)
@@ -22,6 +23,7 @@ pattern a :≉ b = Neg (a, b)
 pattern a :≈ b = Pos (a, b)
 infix 4 :≉
 infix 4 :≈
+{-# COMPLETE (:≉), (:≈) #-}
 
 -- unoriented equality for literals
 eq_lit :: Substitution -> Literal -> Literal -> Bool
@@ -201,13 +203,16 @@ cmp_lits lit1 lit2 = do
 -- our clauses are deduplicated, but maximal ⇏ strictly maximal because there might be more than
 -- one element equal according to the order
 -- TODO: example / when is this the case?
+-- precondition: substitution already applied (lsig)
 eligible :: Bool -> Literal -> Substitution -> Clause -> Bool
-eligible strictly l sig cl = all maximal clcompared
+eligible strictly lsig sig cl = all maximal clcompared
   where
     maximal = flip (elem @[]) $ [Just GT, Nothing] <> if strictly then [] else [Just EQ]
     clcompared = cmp_lits lsig `map` clsig
-    Cl clsig = map_clause (fmap $ apply_subst sig) cl
-    lsig = apply_subst sig <$> l
+    Cl clsig = subst_clause sig cl
+
+subst_clause :: Substitution -> Clause -> Clause
+subst_clause sig cl = map_clause (fmap $ apply_subst sig) cl
 
 occurs_deeply :: ElabCtx -> Metavar -> Clause -> Bool
 occurs_deeply ctx m (Cl cl) = any go cl
@@ -239,3 +244,105 @@ varcond (VFree _ _) _ t'sig | VLam _ _ _ <- t'sig = True
 -- OR u is not a variable
 varcond (VFree _ _) _ _ = False
 varcond _ _ _ = True
+
+sup_rule :: ElabCtx -> Clause -> Literal -> Clause -> Literal -> (Position, Value) -> Maybe Clause
+sup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
+  | applies =
+      Just $ subst_clause sig $ Cl $ res : d' <> c'
+  where
+    c = Cl $ ss' : c'
+    d = Cl $ (t :≈ t') : d'
+    not_deep_occ_var (VFree m _) = not $ occurs_deeply ctx m c
+    not_deep_occ_var _ = True
+    -- TODO: not sure where to do the csu computation, need to understand main loop first
+    sig = undefined $ csu ctx $ Uc (t, u)
+    ss'sig = apply_subst sig <$> ss'
+    (tsig, t'sig) = (apply_subst sig t, apply_subst sig t')
+    res = case ss' of
+      s :≈ s' -> green_replace upos t' s :≈ s'
+      s :≉ s' -> green_replace upos t' s :≉ s'
+    applies =
+      -- 1
+      not (is_fluid_val u)
+        -- 2
+        && not_deep_occ_var u
+        -- 3
+        && varcond u tsig t'sig
+        -- 5
+        && ckbo tsig t'sig `notElem` ([Just LT, Just EQ] :: [PartialOrd])
+        -- 6
+        && ckbo (lfst ss'sig) (lsnd ss'sig) `notElem` ([Just LT, Just EQ] :: [PartialOrd])
+        -- 8
+        && eligible True (tsig :≈ t'sig) sig d
+        -- 9
+        && case ss' of
+          Pos _ -> eligible True ss'sig sig c
+          Neg _ -> eligible False ss'sig sig c
+sup_rule _ _ _ _ _ _ = Nothing
+
+-- TODO: it seems the rules apply the σ ∈ csu substitution greedily. so we don't really need
+--   to return an ElabCtx, a fresh counter capability would suffice
+fluidsup_rule :: ElabCtx -> Clause -> Literal -> Clause -> Literal -> (Position, Value) -> Maybe (Clause, ElabCtx)
+fluidsup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
+  | applies =
+      Just (subst_clause sig $ Cl $ res : d' <> c', ctx')
+  where
+    c = Cl $ ss' : c'
+    d = Cl $ (t :≈ t') : d'
+    deep_occ_var (VFree m _) = occurs_deeply ctx m c
+    deep_occ_var _ = False
+    zm = fresh_meta ctx.metactx
+    -- TODO: compute the type, this needs something like compute_ty(typeof(u), typeof(t'))
+    zty = undefined
+    z = VFree zm zty
+    ctx' = ctx{metactx = update_subst ctx.metactx zm (zty, Fresh Fluidsup)}
+    -- TODO: where to force? also in 4. this is nonsense. we force with va, then force again (apply_subst)...
+    va = value_app ctx'.metactx
+    -- TODO: csu computation
+    sig = undefined $ csu ctx $ Uc (z `va` t, u)
+    ss'sig = apply_subst sig <$> ss'
+    (tsig, t'sig) = (apply_subst sig t, apply_subst sig t')
+    res = case ss' of
+      s :≈ s' -> green_replace upos (z `va` t') s :≈ s'
+      s :≉ s' -> green_replace upos (z `va` t') s :≉ s'
+    applies =
+      -- 1
+      (is_fluid_val u || deep_occ_var u)
+        -- 4
+        -- TODO: why syntactic equality? can we use αβη-conv?
+        && not (abe_conv ctx'.metactx (apply_subst sig $ z `va` t') (apply_subst sig $ z `va` t))
+        -- 5
+        && ckbo tsig t'sig `notElem` ([Just LT, Just EQ] :: [PartialOrd])
+        -- 6
+        && ckbo (lfst ss'sig) (lsnd ss'sig) `notElem` ([Just LT, Just EQ] :: [PartialOrd])
+        -- 8
+        && eligible True (tsig :≈ t'sig) sig d
+        -- 9
+        && case ss' of
+          Pos _ -> eligible True ss'sig sig c
+          Neg _ -> eligible False ss'sig sig c
+fluidsup_rule _ _ _ _ _ _ = Nothing
+
+eres_rule :: ElabCtx -> Clause -> Literal -> Maybe Clause
+eres_rule ctx (Cl c') (u :≉ u') | applies = Just $ subst_clause sig (Cl c')
+  where
+    c = Cl $ (u :≉ u') : c'
+    -- TODO: csu computation
+    sig = undefined $ csu ctx $ Uc (u, u')
+    applies = eligible False (apply_subst sig <$> (u :≉ u')) sig c
+eres_rule _ _ _ = Nothing
+
+efact_rule :: ElabCtx -> Clause -> Literal -> Literal -> Maybe Clause
+efact_rule ctx (Cl c') (u' :≈ v') (u :≈ v)
+  | applies =
+      Just $ subst_clause sig $ Cl $ res <> c'
+  where
+    c = Cl $ (u' :≈ v') : (u :≈ v) : c'
+    -- TODO: csu computation
+    sig = undefined $ csu ctx $ Uc (u, u')
+    (usig, vsig) = (apply_subst sig u, apply_subst sig v)
+    res = [v :≉ v', u :≈ v']
+    applies =
+      ckbo usig vsig `notElem` ([Just LT, Just EQ] :: [PartialOrd])
+        && eligible False (usig :≈ vsig) sig c
+efact_rule _ _ _ _ = Nothing

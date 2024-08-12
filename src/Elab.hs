@@ -137,7 +137,7 @@ lvl2idx (Lvl l) (Lvl x) = Idx $ l - x - 1
 (!!!) :: [a] -> Idx -> a
 xs !!! (Idx i) = xs `List.genericIndex` i
 
-data EmergedFrom = Elim | Ident | Dummy | Skolem | User | Other
+data EmergedFrom = Elim | Ident | Dummy | Skolem | User | Fluidsup | Other
   deriving (Show, Eq)
 data MetaStatus = Substituted Value | Fresh EmergedFrom
   deriving (Show)
