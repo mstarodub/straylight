@@ -38,6 +38,7 @@ data Raw
     RVar Name
   | RApp Raw Raw
   | RLam Name Raw
+  | RALam Name Raw Raw
   | RPi Name Raw Raw
   | RStar
   | RLet Name Raw Raw -- RLet x:a = t
@@ -318,12 +319,6 @@ nf ctx = quote ctx . eval ctx
 eta_reduce :: Term -> Term
 eta_reduce (ALam _ _ (t :@ Bound 0)) | not (0 `free_in` t) = shift_down t
   where
-    free_in :: Idx -> Term -> Bool
-    free_in i (ALam _ a b) = free_in i a || free_in (i + 1) b
-    free_in i (Pi _ t1 t2) = free_in i t1 || free_in (i + 1) t2
-    free_in i (t1 :@ t2) = free_in i t1 || free_in i t2
-    free_in i (Bound i') = i == i'
-    free_in _ _ = False
     -- only bound vars "outside" / free vars
     shift_down :: Term -> Term
     shift_down = go 0
@@ -339,6 +334,13 @@ eta_reduce (ALam s a t) = ALam s (eta_reduce a) (eta_reduce t)
 eta_reduce (Pi s t1 t2) = Pi s (eta_reduce t1) (eta_reduce t2)
 eta_reduce (t1 :@ t2) = eta_reduce t1 :@ eta_reduce t2
 eta_reduce t = t
+
+free_in :: Idx -> Term -> Bool
+free_in i (ALam _ a b) = free_in i a || free_in (i + 1) b
+free_in i (Pi _ t1 t2) = free_in i t1 || free_in (i + 1) t2
+free_in i (t1 :@ t2) = free_in i t1 || free_in i t2
+free_in i (Bound i') = i == i'
+free_in _ _ = False
 
 -- typechecking monad
 type Tc = Except String
@@ -426,6 +428,16 @@ infer ctx (RPi s t1 t2) = do
   check_rule ctx (s1, s2)
   pure (Pi s tm1 tm2, s2)
 infer _ RStar = pure (Sort Star, VSort Box)
+infer ctx (RALam s ty body) = do
+  tc_trace ["infer: ralam", show (RALam s ty body)]
+  (tmty, _) <- infer ctx ty
+  let tmv = eval ctx tmty
+  let ctx' = bind_var ctx (s, tmv)
+  (tmb, tyb) <- infer ctx' body
+  -- this part is a bit tricky, but similar to how we eval lams and pis
+  let rettyc = quote ctx{lvl = ctx.lvl + 1} tyb
+  let retty = \v -> eval (extend_lenv ctx v) rettyc
+  pure (ALam s tmty tmb, VPi s tmv retty)
 infer ctx e = report ctx $ "unable to infer type for " <> show e
 
 -- the context is just for pretty printing
@@ -441,7 +453,7 @@ check ctx r vty_want = do
   (tm, vty_have) <- infer ctx r
   unless (abe_conv ctx.metactx vty_want vty_have) $
     report ctx $
-      "expected type " <> show_val ctx vty_want <> " - got " <> show_val ctx vty_have
+      "expected " <> show_val ctx vty_want <> "\ngot type " <> show_val ctx vty_have
   pure tm
 
 check_rule :: ElabCtx -> (Value, Value) -> Tc ()
@@ -495,36 +507,46 @@ pp_term ns ep t = case t of
   Const (Name s) -> (const_typeset s <>)
   Free (Metavar m) -> ("?" <>) . (show m <>)
   Bound (Idx i) -> if i < List.genericLength ns then ((ns `List.genericIndex` i) <>) else (show i <>)
-  Pi "" a b -> par ep pi_p $ pp_term ns app_p a . (" -> " <>) . pp_term ("" : ns) pi_p b
-  Pi (Name s) a b ->
-    par ep pi_p $
-      ("forall " <>)
-        . showParen (pi_again b) ((s <>) . (":" <>) . pp_term ns lam_p a)
-        . go_pi (s : ns) b
-    where
-      go_pi nss (Pi (Name x) a' b')
-        | x /= "" =
-            (" " <>) . showParen True ((x <>) . (":" <>) . pp_term nss lam_p a') . go_pi (x : nss) b'
-      go_pi nss e' = (". " <>) . pp_term nss pi_p e'
+  Pi y a'' b'' -> case un_pi (Pi y a'' b'') of
+    Pi "" a b -> par ep pi_p $ pp_term ns app_p a . (" -> " <>) . pp_term ("" : ns) pi_p b
+    Pi (Name s) a b ->
+      par ep pi_p $
+        ("forall " <>)
+          . showParen (pi_again b) ((s <>) . (":" <>) . pp_term ns lam_p a)
+          . go_pi (s : ns) b
+      where
+        go_pi nss (Pi (Name x) a' b')
+          | x /= "" =
+              (" " <>) . showParen True ((x <>) . (":" <>) . pp_term nss lam_p a') . go_pi (x : nss) b'
+        go_pi nss e' = (". " <>) . pp_term nss pi_p e'
+    _ -> error "impossible"
   e1 :@ e2 -> par ep app_p $ pp_term ns app_p e1 . (" " <>) . pp_term ns atom_p e2
   Sort s -> (show s <>)
-  ALam (Name s) ty e -> par ep lam_p $ ("λ " <>) . (s <>) . pp_tyannot ty . go_alam (s : ns) e
+  ALam (Name s) ty e -> par ep lam_p $ ("λ " <>) . showParen (alam_again e) (pp_opt_tyannot ns s ty) . go_alam (s : ns) e
     where
-      go_alam nss (ALam (Name s') t' e') = (" " <>) . (s' <>) . pp_tyannot t' . go_alam (s' : nss) e'
+      go_alam nss (ALam (Name s') t' e') = (" " <>) . showParen print_tyannot (pp_opt_tyannot nss s' t') . go_alam (s' : nss) e'
       go_alam nss e' = (". " <>) . pp_term nss lam_p e'
-      pp_tyannot a = if print_tyannot then (":" <>) . pp_term ns lam_p a else id
+      pp_opt_tyannot nss x a = if print_tyannot then (x <>) . (":" <>) . pp_term nss lam_p a else (x <>)
   where
     par :: Int -> Int -> ShowS -> ShowS
     par enclosing_p p = showParen (p < enclosing_p)
-    pi_again :: Term -> Bool
+    pi_again, alam_again :: Term -> Bool
     pi_again (Pi _ _ _) = True
     pi_again _ = False
+    alam_again (ALam _ _ _) = print_tyannot
+    alam_again _ = False
     (atom_p, app_p, pi_p, lam_p) = (3, 2, 1, 0)
     const_typeset :: String -> String
     const_typeset s =
       Console.setSGRCode [Console.SetUnderlining Console.SingleUnderline]
         <> s
         <> Console.setSGRCode [Console.SetUnderlining Console.NoUnderline]
+
+-- does not recurse into non-pis for exotic types
+un_pi :: Term -> Term
+un_pi (Pi s a b) | s /= "" && not (0 `free_in` b) = Pi "" (un_pi a) (un_pi b)
+un_pi (Pi "" a b) = Pi "" (un_pi a) (un_pi b)
+un_pi t = t
 
 show_val :: ElabCtx -> Value -> String
 show_val ctx = show_term ctx . quote ctx
@@ -623,7 +645,7 @@ p_meta = do
   x :: Int <- integer
   pure $ Metavar x
 
-p_let, p_clet, p_pi, p_lam, p_flet :: Parser Raw
+p_let, p_clet, p_pi, p_lam, p_alam, p_flet :: Parser Raw
 p_let = do
   symbol "let"
   x <- p_ident
@@ -646,11 +668,11 @@ p_flet = do
   pure $ RFLet x a
 p_pi = do
   symbol "forall"
-  decls <- some (parens p_forall_decl <|> p_forall_decl)
+  args <- some (parens p_typed_args <|> p_typed_args)
   symbol "."
   b <- p_raw
   -- right associative
-  pure $ foldr (uncurry RPi) b decls
+  pure $ foldr (uncurry RPi) b args
 p_lam = do
   symbol "λ" <|> symbol "\\"
   xs <- some p_ident
@@ -658,6 +680,12 @@ p_lam = do
   b <- p_raw
   -- also "right associative"
   pure $ foldr RLam b xs
+p_alam = do
+  symbol "λ" <|> symbol "\\"
+  args <- some (parens p_typed_args <|> p_typed_args)
+  symbol "."
+  b <- p_raw
+  pure $ foldr (uncurry RALam) b args
 
 p_atom, p_apps :: Parser Raw
 p_atom = (RVar <$> p_ident) <|> p_freeref <|> p_star <|> parens p_raw
@@ -670,8 +698,8 @@ p_atom = (RVar <$> p_ident) <|> p_freeref <|> p_star <|> parens p_raw
 -- left associative
 p_apps = foldl1 RApp <$> some p_atom
 
-p_forall_decl :: Parser (Name, Raw)
-p_forall_decl = do
+p_typed_args :: Parser (Name, Raw)
+p_typed_args = do
   x <- p_ident
   symbol ":"
   a <- p_raw
@@ -686,7 +714,7 @@ p_arr_or_apps = do
     Just _ -> RPi "" sp <$> p_raw
 
 p_raw :: Parser Raw
-p_raw = with_pos $ choice ([p_let, p_clet, p_flet, p_lam, p_pi, p_arr_or_apps] :: [Parser Raw])
+p_raw = with_pos $ choice ([p_let, p_clet, p_flet, try p_alam, p_lam, p_pi, p_arr_or_apps] :: [Parser Raw])
 
 p_src :: Parser [Raw]
 p_src = whitespace *> p_raw `sepEndBy` semi <* eof

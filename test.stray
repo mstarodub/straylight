@@ -30,6 +30,10 @@ let mul  : Nat -> Nat -> Nat = \a b N s z. a N (b N s) z;
 let exp : Nat -> Nat -> Nat = \a b N. b (N -> N) (a N);
 let succ : Nat -> Nat = \a N s z. s (a N s z);
 
+-- let pred : Nat -> Nat = \a N s z. a (\g h. h (g s)) (\u. z) (\u. u)
+-- annotatated lambda example. need to figure out the arg types, this is wrong
+let pred : Nat -> Nat = \a N s z. a N (\(g:(N->N)->N) (h:N->N->N). h (g s)) (\(u:N). z) (\(u:N). u);
+
 let ten      : Nat = add five five;
 let hundred  : Nat = mul ten ten;
 
