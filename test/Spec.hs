@@ -1,4 +1,4 @@
-module Tests where
+module Spec where
 
 import Data.Bifunctor
 import qualified Data.List as List
@@ -118,8 +118,8 @@ green_test_tm =
     :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
 green_test_val = eval green_test_ctx green_test_tm
 
-spec :: IO ()
-spec = hspec do
+main :: IO ()
+main = hspec do
   describe "kbo" do
     it "encoding"
       $ mapM_
@@ -150,6 +150,3 @@ spec = hspec do
           :@ (Const "g" :@ (Const "f" :@ Free 9))
           :@ (Free 9 :@ Const "b")
           :@ ALam "x" (Const "ty") (Const "h" :@ Const "c" :@ (Const "g" :@ Bound 0))
-
-main :: IO ()
-main = spec

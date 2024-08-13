@@ -1,4 +1,4 @@
-cabal-version: 3.4
+cabal-version: 3.8
 name:          straylight
 version:       0.0.1
 author:        Maxim Starodub
@@ -66,20 +66,12 @@ common extensions
 common imports
     build-depends:
         , ansi-terminal
-        , base               ^>=4.20.0.0
+        , base           ^>=4.20.0.0
         , containers
-        , generic-arbitrary
-        , hspec
         , megaparsec
         , mtl
-        , QuickCheck
-        , regex-compat
 
-executable tst
-    import:         ghc-settings, extensions, imports
-    main-is:        Tests.hs
-    ghc-options:    -main-is Tests
-    hs-source-dirs: src
+common core-modules
     other-modules:
         Core
         Elab
@@ -88,3 +80,20 @@ executable tst
         Pretty
         Superpos
         Unif
+
+executable straylight
+    import:         ghc-settings, extensions, imports, core-modules
+    main-is:        Main.hs
+    ghc-options:    -main-is Main
+    hs-source-dirs: src
+
+test-suite straylight-test
+    import:         ghc-settings, extensions, imports, core-modules
+    main-is:        Spec.hs
+    ghc-options:    -main-is Spec
+    hs-source-dirs: test src
+    build-depends:
+        , generic-arbitrary
+        , hspec
+        , QuickCheck
+        , regex-compat
