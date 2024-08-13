@@ -12,6 +12,7 @@ import Test.QuickCheck
 import Test.QuickCheck.Arbitrary.Generic
 import qualified Text.Regex as Regex
 
+import Core
 import Elab
 import Order
 import Superpos

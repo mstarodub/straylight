@@ -8,6 +8,7 @@ import Data.Maybe
 import qualified Data.Sequence as Seq
 import Numeric.Natural
 
+import Core
 import Elab
 import Order
 import Unif

@@ -81,7 +81,10 @@ executable tst
     ghc-options:    -main-is Tests
     hs-source-dirs: src
     other-modules:
+        Core
         Elab
         Order
+        Parse
+        Pretty
         Superpos
         Unif

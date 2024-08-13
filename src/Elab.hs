@@ -3,102 +3,18 @@ module Elab where
 import Control.Monad
 import Control.Monad.Except
 import Data.Bifunctor
-import Data.Char
 import Data.Either
-import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 import qualified Data.List as List
 import Data.Sequence (Seq (..))
-import Data.String (IsString)
-import Data.Void
 import Debug.Trace
-import GHC.Exts (IsList, toList)
+import GHC.Exts (toList)
 import Numeric.Natural
-import qualified System.Console.ANSI as Console
-import Text.Megaparsec hiding (Stream)
-import qualified Text.Megaparsec.Char as C (space1)
-import qualified Text.Megaparsec.Char.Lexer as L
-import Text.Printf
-import Text.Show.Functions ()
+import Text.Megaparsec (SourcePos, errorBundlePretty, initialPos, sourcePosPretty)
 
--- setting:
--- type of all free variables is known
--- all polymorphic symbols have explicit type arguments
-
--- need:
---   type constructors (like maybe, list, bool)
---   term constants (of fixed type)
---   type/term variables (known type) "free"
---   example type constructor: const ttt = forall a:*. a -> bool
-
--- user-supplied presyntax. named representation
-data Raw
-  = -- used for everything except free variables. those are not present in user input, but we
-    -- provide a constructor (RFLet) and a way of referring to them (RFree) for testing
-    RVar Name
-  | RApp Raw Raw
-  | RLam Name Raw
-  | RALam Name Raw Raw
-  | RPi Name Raw Raw
-  | RStar
-  | RLet Name Raw Raw -- RLet x:a = t
-  | RCLet Name Raw -- RCLet x:a
-  | RFLet Metavar Raw -- RFLet x:a
-  | RFree Metavar -- ?f
-  | RSrcPos SourcePos Raw -- for error reporting
-  deriving (Show)
-
-newtype Name = Name String deriving (Semigroup, Show, Monoid, Ord, Eq, IsString) via String
-newtype Metavar = Metavar Int deriving (Ord, Eq, Show, Num, Enum) via Int
-newtype Idx = Idx Int deriving (Eq, Ord, Show, Num) via Int
-newtype Lvl = Lvl Int deriving (Eq, Ord, Show, Num) via Int
-
--- ⋆ or □. ⋆ can be read as "type", and e.g. we have bool : ⋆.
--- additionally, ⋆:□, but boxes (□) are just for internal use by the typechecker and never present in input
-data Sorts = Star | Box
-  deriving (Eq, Ord)
-
--- we could drop the name from Lam and Pi, but we keep it around for pretty printing.
--- crucially, we do not keep it in the bound variable constructor - that one uses debruijn indices.
--- (knowing the name of the binder is enough to know the name of everything that refers to it)
--- name manipulation only happens in printing - freshness, shadowing etc is not a concern
--- for constants and free variables: their types (and values) are in the context, and they always have an associated type
--- names for those may not clash!
-data Term
-  = Const Name -- type constructors + term constants
-  | Free Metavar -- free variables (type known)
-  | Bound Idx -- debrujin index
-  | Pi Name Term Term
-  | Term :@ Term -- application
-  | Sort Sorts
-  | ALam Name Term Term
-
-pattern (:->) :: Term -> Term -> Term
-pattern a :-> b = Pi "" a b
-infixr 1 :->
-
-type Spine = Seq Value
-
-data Value
-  = VFlex Metavar Spine Value
-  | VRigid (Either Lvl Name) Spine Value
-  | VLam Name Value (Value -> Value)
-  | VPi Name Value (Value -> Value)
-  | VSort Sorts
-  deriving (Show)
-
-pattern VBound :: Lvl -> Value -> Value
-pattern VBound x a = VRigid (Left x) [] a
-
--- proxy value (for a constant)
-pattern VConst :: Name -> Value -> Value
-pattern VConst x a = VRigid (Right x) [] a
-pattern VFree :: Metavar -> Value -> Value
-pattern VFree m a = VFlex m [] a
-
-newtype Ctx a = Ctx [(Name, a)]
-  deriving (IsList, Semigroup, Monoid, Show) via [(Name, a)]
-  deriving (Functor)
+import Core
+import Parse
+import Pretty
 
 -- alpha convertibility.
 -- almost syntactic equality (but we are ignoring the binder names)
@@ -112,54 +28,6 @@ instance Eq Term where
   e1 :@ e1' == e2 :@ e2' = e1 == e2 && e1' == e2'
   Sort s1 == Sort s2 = s1 == s2
   _ == _ = False
-
-lookup_ctx :: Ctx a -> Name -> Either String a
-lookup_ctx (Ctx r) s = case lookup s r of
-  Just t -> pure t
-  Nothing -> throwError $ "cannot find variable " <> show s
-
-lookup_ctx_partial :: Ctx a -> Name -> a
-lookup_ctx_partial c = either error id . lookup_ctx c
-
-extend_ctx :: (Name, a) -> Ctx a -> Ctx a
-extend_ctx (s, t) (Ctx e) = Ctx $ (s, t) : e
-
-lookup_ctx_idx :: Ctx a -> Name -> Either String (Idx, a)
-lookup_ctx_idx (Ctx r) key = go 0 r
-  where
-    go _ [] = throwError $ "cannot find variable " <> show key
-    go i ((s, x) : sxs)
-      | key == s = pure $ (i, x)
-      | otherwise = go (i + 1) sxs
-
-lvl2idx :: Lvl -> Lvl -> Idx
-lvl2idx (Lvl l) (Lvl x) = Idx $ l - x - 1
-
-(!!!) :: [a] -> Idx -> a
-xs !!! (Idx i) = xs `List.genericIndex` i
-
-data EmergedFrom = Elim | Ident | Dummy | Skolem | User | Fluidsup | Other
-  deriving (Show, Eq)
-data MetaStatus = Substituted Value | Fresh EmergedFrom
-  deriving (Show)
-
-type Substitution = IntMap (Value, MetaStatus)
-
--- tenv is the typing context for bound variables, name-keyed (names come from raw terms)
--- lenv contains values (for eval)
--- toplvl stores (values,types) for let definitions
--- invariant: length (= lvl). "unzipped"
--- metactx stores types of free vars and their substitution state
--- unification debug info is (tree depth, "last bind op")
-data ElabCtx = ElabCtx
-  { tenv :: Ctx Value
-  , lenv :: [Value]
-  , lvl :: Lvl
-  , toplvl :: Ctx (Value, Value)
-  , metactx :: Substitution
-  , dbg_unif :: (Integer, String)
-  , srcpos :: SourcePos
-  }
 
 -- add a bound variable
 bind_var :: ElabCtx -> (Name, Value) -> ElabCtx
@@ -207,11 +75,11 @@ already_defined :: ElabCtx -> Either Metavar Name -> Bool
 already_defined ctx (Left (Metavar m)) = m `IntMap.member` ctx.metactx
 already_defined ctx (Right s) = isRight $ lookup_ctx ctx.toplvl s
 
--- TODO: not needed? actually maybe it is during eval
 get_free_ty :: ElabCtx -> Metavar -> Either String Value
 get_free_ty ctx (Metavar m) = case fst <$> ctx.metactx IntMap.!? m of
   Just v -> pure v
   Nothing -> throwError $ "cannot find type for free variable  ?" <> show m
+
 get_free_ty_partial :: ElabCtx -> Metavar -> Value
 get_free_ty_partial ctx (Metavar m) = fst $ ctx.metactx IntMap.! m
 
@@ -279,7 +147,7 @@ eval ctx (Const v) = get_const_def_partial ctx v
 eval ctx (Free m) = case get_subst ctx.metactx m of
   Substituted v -> v
   Fresh _ -> VFree m (get_free_ty_partial ctx m)
-eval ctx (Bound i) = ctx.lenv !!! i
+eval ctx (Bound (Idx i)) = ctx.lenv `List.genericIndex` i
 eval ctx (ALam s a body) = VLam s (eval ctx a) (\x -> eval (extend_lenv ctx x) body)
 eval ctx (Pi ms t1 t2) = VPi ms (eval ctx t1) (\x -> eval (extend_lenv ctx x) t2)
 eval ctx (e1 :@ e2) = value_app ctx.metactx (eval ctx e1) (eval ctx e2)
@@ -335,13 +203,6 @@ eta_reduce (Pi s t1 t2) = Pi s (eta_reduce t1) (eta_reduce t2)
 eta_reduce (t1 :@ t2) = eta_reduce t1 :@ eta_reduce t2
 eta_reduce t = t
 
-free_in :: Idx -> Term -> Bool
-free_in i (ALam _ a b) = free_in i a || free_in (i + 1) b
-free_in i (Pi _ t1 t2) = free_in i t1 || free_in (i + 1) t2
-free_in i (t1 :@ t2) = free_in i t1 || free_in i t2
-free_in i (Bound i') = i == i'
-free_in _ _ = False
-
 -- typechecking monad
 type Tc = Except String
 runTC = runExcept
@@ -351,10 +212,10 @@ report :: ElabCtx -> String -> Tc a
 report ctx msg = throwError $ sourcePosPretty ctx.srcpos <> ":\n" <> msg
 
 -- debug printing
-debug_print = False
+debug_tc = False
 tc_trace :: [String] -> Tc ()
 tc_trace ss =
-  when debug_print $ trace ("TRACE " <> unwords ss) $ () `seq` pure ()
+  when debug_tc $ trace ("TRACE " <> unwords ss) $ () `seq` pure ()
 tc_trace2 :: [String] -> Tc ()
 tc_trace2 ss =
   trace ("TRACE2 " <> unwords ss) $ () `seq` pure ()
@@ -488,92 +349,10 @@ abe_conv sig = go (-1)
       go l sp1 sp2 && go_spine l spine1 spine2
     go_spine _ _ _ = False
 
-instance Show Sorts where
-  show Star = "*"
-  show Box = "□"
-
-instance Show Term where
-  showsPrec = pp_term []
-
--- makes ghc Show show unicode strings
-instance {-# OVERLAPPING #-} Show String where
-  show x = '"' : x <> "\""
-
-print_tyannot :: Bool
-print_tyannot = False
-
-pp_term :: [String] -> Int -> Term -> ShowS
-pp_term ns ep t = case t of
-  Const (Name s) -> (const_typeset s <>)
-  Free (Metavar m) -> ("?" <>) . (show m <>)
-  Bound (Idx i) -> if i < List.genericLength ns then ((ns `List.genericIndex` i) <>) else (show i <>)
-  Pi y a'' b'' -> case un_pi (Pi y a'' b'') of
-    Pi "" a b -> par ep pi_p $ pp_term ns app_p a . (" -> " <>) . pp_term ("" : ns) pi_p b
-    Pi (Name s) a b ->
-      par ep pi_p $
-        ("forall " <>)
-          . showParen (pi_again b) ((s <>) . (":" <>) . pp_term ns lam_p a)
-          . go_pi (s : ns) b
-      where
-        go_pi nss (Pi (Name x) a' b')
-          | x /= "" =
-              (" " <>) . showParen True ((x <>) . (":" <>) . pp_term nss lam_p a') . go_pi (x : nss) b'
-        go_pi nss e' = (". " <>) . pp_term nss pi_p e'
-    _ -> error "impossible"
-  e1 :@ e2 -> par ep app_p $ pp_term ns app_p e1 . (" " <>) . pp_term ns atom_p e2
-  Sort s -> (show s <>)
-  ALam (Name s) ty e -> par ep lam_p $ ("λ " <>) . showParen (alam_again e) (pp_opt_tyannot ns s ty) . go_alam (s : ns) e
-    where
-      go_alam nss (ALam (Name s') t' e') = (" " <>) . showParen print_tyannot (pp_opt_tyannot nss s' t') . go_alam (s' : nss) e'
-      go_alam nss e' = (". " <>) . pp_term nss lam_p e'
-      pp_opt_tyannot nss x a = if print_tyannot then (x <>) . (":" <>) . pp_term nss lam_p a else (x <>)
-  where
-    par :: Int -> Int -> ShowS -> ShowS
-    par enclosing_p p = showParen (p < enclosing_p)
-    pi_again, alam_again :: Term -> Bool
-    pi_again (Pi _ _ _) = True
-    pi_again _ = False
-    alam_again (ALam _ _ _) = print_tyannot
-    alam_again _ = False
-    (atom_p, app_p, pi_p, lam_p) = (3, 2, 1, 0)
-    const_typeset :: String -> String
-    const_typeset s =
-      Console.setSGRCode [Console.SetUnderlining Console.SingleUnderline]
-        <> s
-        <> Console.setSGRCode [Console.SetUnderlining Console.NoUnderline]
-
--- does not recurse into non-pis for exotic types
-un_pi :: Term -> Term
-un_pi (Pi s a b) | s /= "" && not (0 `free_in` b) = Pi "" (un_pi a) (un_pi b)
-un_pi (Pi "" a b) = Pi "" (un_pi a) (un_pi b)
-un_pi t = t
-
 show_val :: ElabCtx -> Value -> String
 show_val ctx = show_term ctx . quote ctx
 
--- TODO: explain why this is used instead of just the Show instance
-show_term :: ElabCtx -> Term -> String
-show_term ctx t = pp_term names 0 t ""
-  where
-    Ctx ct = ctx.tenv
-    names = fmap (\(Name s, _) -> s) ct
-
-pp_metastatus :: ElabCtx -> MetaStatus -> String
-pp_metastatus _ (Fresh from) = show from
-pp_metastatus ctx (Substituted v) = "Substituted " <> show_val ctx v
-
-pp_substitutions :: ElabCtx -> Substitution -> String
-pp_substitutions ctx =
-  IntMap.foldMapWithKey
-    \key (val, status) ->
-      "\t?"
-        <> show key
-        <> " : "
-        <> show_val ctx val
-        <> " -- "
-        <> pp_metastatus ctx status
-        <> "\n"
-
+-- for debugging
 instance Show ElabCtx where
   show ctx =
     "env = [\n"
@@ -595,155 +374,24 @@ instance Show ElabCtx where
               <> show_val ctx vty
               <> " = "
               <> show_val ctx val
-
----
-
-type Parser = Parsec Void String
-
-debug_nosrcpos = False
-
-with_pos :: Parser Raw -> Parser Raw
-with_pos p = if debug_nosrcpos then p else RSrcPos <$> getSourcePos <*> p
-
-whitespace :: Parser ()
-whitespace = L.space C.space1 (L.skipLineComment "--") empty
-
-lexeme :: Parser a -> Parser a
-lexeme = L.lexeme whitespace
-
-symbol :: String -> Parser String
-symbol = L.symbol whitespace
-
-integer :: Parser Int
-integer = lexeme L.decimal
-
-parens :: Parser a -> Parser a
-parens = between (symbol "(") (symbol ")")
-
-semi :: Parser String
-semi = symbol ";"
-
-p_arr :: Parser String
-p_arr = symbol "→" <|> symbol "->"
-
-ident_chars :: Char -> Bool
-ident_chars c = isLowerCase c || isUpperCase c || c `elem` special_chars
-  where
-    special_chars :: [Char] = ['_', '\'', '∀', '∃']
-
-reserved_keywords :: [String]
-reserved_keywords = ["let", "const", "free", "forall", "λ", "_lam", "_pi", "_sort"]
-
-p_ident :: Parser Name
-p_ident = do
-  x <- takeWhile1P Nothing ident_chars
-  guard (x `notElem` reserved_keywords)
-  Name <$> (x <$ whitespace)
-
-p_meta :: Parser Metavar
-p_meta = do
-  x :: Int <- integer
-  pure $ Metavar x
-
-p_let, p_clet, p_pi, p_lam, p_alam, p_flet :: Parser Raw
-p_let = do
-  symbol "let"
-  x <- p_ident
-  symbol ":"
-  a <- p_raw
-  symbol "="
-  t <- p_raw
-  pure $ RLet x a t
-p_clet = do
-  symbol "const"
-  x <- p_ident
-  symbol ":"
-  a <- p_raw
-  pure $ RCLet x a
-p_flet = do
-  symbol "free"
-  x <- p_meta
-  symbol ":"
-  a <- p_raw
-  pure $ RFLet x a
-p_pi = do
-  symbol "forall"
-  args <- some (parens p_typed_args <|> p_typed_args)
-  symbol "."
-  b <- p_raw
-  -- right associative
-  pure $ foldr (uncurry RPi) b args
-p_lam = do
-  symbol "λ" <|> symbol "\\"
-  xs <- some p_ident
-  symbol "."
-  b <- p_raw
-  -- also "right associative"
-  pure $ foldr RLam b xs
-p_alam = do
-  symbol "λ" <|> symbol "\\"
-  args <- some (parens p_typed_args <|> p_typed_args)
-  symbol "."
-  b <- p_raw
-  pure $ foldr (uncurry RALam) b args
-
-p_atom, p_apps :: Parser Raw
-p_atom = (RVar <$> p_ident) <|> p_freeref <|> p_star <|> parens p_raw
-  where
-    p_star = RStar <$ symbol "*"
-    p_freeref = do
-      symbol "?"
-      x <- p_meta
-      pure $ RFree x
--- left associative
-p_apps = foldl1 RApp <$> some p_atom
-
-p_typed_args :: Parser (Name, Raw)
-p_typed_args = do
-  x <- p_ident
-  symbol ":"
-  a <- p_raw
-  pure (x, a)
-
-p_arr_or_apps :: Parser Raw
-p_arr_or_apps = do
-  sp <- p_apps
-  o <- optional p_arr
-  case o of
-    Nothing -> pure sp
-    Just _ -> RPi "" sp <$> p_raw
-
-p_raw :: Parser Raw
-p_raw = with_pos $ choice ([p_let, p_clet, p_flet, try p_alam, p_lam, p_pi, p_arr_or_apps] :: [Parser Raw])
-
-p_src :: Parser [Raw]
-p_src = whitespace *> p_raw `sepEndBy` semi <* eof
-
--- mimic the megaparsec pretty printing in terms of appearance
--- massive hack, because we don't want to complicate the error type
-display_err :: String -> String -> String
-display_err fileconts errstr =
-  let
-    (sourcepos, msg) = break (== '\n') errstr
-    sourcepos' = tail . filter (not . null) . split ':' $ sourcepos
-    (lineno, colno) = (head sourcepos', last sourcepos')
-    (lineno', colno') :: (Int, Int) = (read lineno, read colno)
-    lpad = fmap (const ' ') lineno
-  in
-    printf "%s\n" sourcepos
-      <> printf "%s |\n" lpad
-      <> printf "%s | %s\n" lineno (lines fileconts !! (lineno' - 1))
-      <> printf "%s | %s" lpad (replicate (colno' - 1) ' ' <> "^")
-      <> printf "%s\n" msg
-  where
-    split :: Eq a => a -> [a] -> [[a]]
-    split c xs = case break (== c) xs of
-      (ls, []) -> [ls]
-      (ls, _ : rs) -> ls : split c rs
+      pp_substitutions :: ElabCtx -> Substitution -> String
+      pp_substitutions ct =
+        IntMap.foldMapWithKey
+          \key (val, status) ->
+            "\t?"
+              <> show key
+              <> " : "
+              <> show_val ct val
+              <> " -- "
+              <> pp_metastatus ct status
+              <> "\n"
+      pp_metastatus :: ElabCtx -> MetaStatus -> String
+      pp_metastatus _ (Fresh from) = show from
+      pp_metastatus ct (Substituted v) = "Substituted " <> show_val ct v
 
 append_parse_tc_toplvl :: String -> ElabCtx -> String -> ElabCtx
 append_parse_tc_toplvl filename ctx contents =
-  case parse p_src filename contents of
+  case parse_raw filename contents of
     Left e -> do
       error $ errorBundlePretty e
     Right rs -> do

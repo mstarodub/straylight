@@ -5,6 +5,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map (empty, insertWith, map, member, unionWith)
 import Numeric.Natural
 
+import Core
 import Elab
 
 -- the completeness of lambda-superposition depends on an order that is stable under substitutions,

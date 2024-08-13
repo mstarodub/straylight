@@ -11,15 +11,16 @@ import Data.Semigroup
 import Debug.Trace
 import qualified GHC.Exts (IsList)
 
+import Core
 import Elab
-import Order ()
 
 -- algorithm from "efficient full higher-order unification" by Bentkamp et al
 
--- debug_print
+-- debug printing
+debug_unif = False
 uf_trace :: ElabCtx -> [String] -> a -> a
 uf_trace ctx ss x =
-  if False then trace ("TRACE " <> show ctx.dbg_unif <> " " <> unwords ss) x else x
+  if debug_unif then trace ("TRACE " <> show ctx.dbg_unif <> " " <> unwords ss) x else x
 
 newtype Stream a = Stream [a]
   deriving (GHC.Exts.IsList) via [a]
