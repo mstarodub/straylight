@@ -71,8 +71,10 @@ common imports
         , megaparsec
         , mtl
 
-common core-modules
-    other-modules:
+library
+    import:          ghc-settings, extensions, imports
+    hs-source-dirs:  src
+    exposed-modules:
         Core
         Elab
         Order
@@ -82,18 +84,20 @@ common core-modules
         Unif
 
 executable straylight
-    import:         ghc-settings, extensions, imports, core-modules
+    import:         ghc-settings, extensions, imports
     main-is:        Main.hs
     ghc-options:    -main-is Main
     hs-source-dirs: src
+    build-depends:  straylight
 
 test-suite straylight-test
-    import:         ghc-settings, extensions, imports, core-modules
+    import:         ghc-settings, extensions, imports
     main-is:        Spec.hs
     ghc-options:    -main-is Spec
-    hs-source-dirs: test src
+    hs-source-dirs: test
     build-depends:
         , generic-arbitrary
         , hspec
         , QuickCheck
         , regex-compat
+        , straylight
