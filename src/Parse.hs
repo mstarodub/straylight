@@ -99,7 +99,7 @@ p_alam = do
   pure $ foldr (uncurry RALam) b args
 
 p_atom, p_apps :: Parser Raw
-p_atom = (RVar <$> p_ident) <|> p_freeref <|> p_star <|> parens p_raw
+p_atom = with_pos ((RVar <$> p_ident) <|> p_freeref <|> p_star) <|> parens p_raw
   where
     p_star = RStar <$ symbol "*"
     p_freeref = do
