@@ -24,7 +24,7 @@ instance {-# OVERLAPPING #-} Show String where
 -- does not recurse into non-pis for exotic types
 un_pi :: Term -> Term
 un_pi (Pi s a b) | s /= "" && not (0 `free_in` b) = Pi "" (un_pi a) (un_pi b)
-un_pi (Pi "" a b) = Pi "" (un_pi a) (un_pi b)
+un_pi (Pi s a b) = Pi s (un_pi a) (un_pi b)
 un_pi t = t
 
 print_tyannot :: Bool
