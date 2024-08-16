@@ -32,7 +32,38 @@ let succ : Nat -> Nat = \a N s z. s (a N s z);
 
 -- let pred : Nat -> Nat = \a N s z. a (\g h. h (g s)) (\u. z) (\u. u)
 -- annotatated lambda example. need to figure out the arg types, this is wrong
-let pred : Nat -> Nat = \a N s z. a N (\(g:(N->N)->N) (h:N->N->N). h (g s)) (\(u:N). z) (\(u:N). u);
+-- let pred : Nat -> Nat = \a N s z. a N (\(g:(N->N)->N) (h:N->N->N). h (g s)) (\(u:N). z) (\(u:N). u);
+
+-- Sum and Product types, system Fω
+-- idea: encode type as a function of n args, where n is the number of constructors
+let Sum : * -> * -> * = \A B. forall C:*. (A -> C) -> (B -> C) -> C;
+let left : forall (a:*) (b:*). a -> Sum a b = \(a:*) (b:*) (v:a) (c:*). \(l:a->c) (r:b->c). l v;
+let right : forall (a:*) (b:*). b -> Sum a b = \(a:*) (b:*) (v:b) (c:*). \(l:a->c) (r:b->c). r v;
+let Product : * -> * -> * = \A B. forall C:*. (A -> B -> C) -> C;
+let pair : forall (a:*) (b:*). a -> b -> Product a b = \(a:*) (b:*) (x:a) (y:b) (c:*) (p:a -> b -> c). p x y;
+let fst : forall (a:*) (b:*). Product a b -> a = \(a:*) (b:*) (p:Product a b). p a (\(x:a) (y:b). x);
+let snd : forall (a:*) (b:*). Product a b -> b = \(a:*) (b:*) (p:Product a b). p b (\(x:a) (y:b). y);
+let split : forall (a:*) (b:*) (r:*). (a -> b -> r) -> Product a b -> r = \a b r f p. p r f;
+
+-- Lists, system Fω
+-- again, type constructor reflects the type of corresponding term constructors
+let List : * -> * = \(a:*). forall ϕ:* -> *. ϕ a -> (a -> ϕ a -> ϕ a) -> ϕ a;
+let nil : forall (a:*). List a = \(a:*) (ϕ:* -> *) (n:ϕ a) (c:a -> ϕ a -> ϕ a). n;
+let cons : forall (a:*). a -> List a -> List a = \(a:*) (x:a) (xs:List a) (ϕ:* -> *) (n:ϕ a) (c:a -> ϕ a -> ϕ a). c x (xs ϕ n c);
+let foldr : forall (a:*) (b:*). (a -> b -> b) -> b -> List a -> b = \(a:*) (b:*) (f:a->b->b) (n:b) (xs:List a). xs (\y:*.b) n f;
+let foldl : forall (a:*) (b:*). (b -> a -> b) -> b -> List a -> b = \(a:*) (b:*) (f:b->a->b) (n:b) (xs:List a). foldr a (b -> b) (\(x:a) (g:b -> b) (v:b). g (f v x)) (\x:b. x) xs n;
+let map : forall (a:*) (b:*). (a -> b) -> List a -> List b = \(a:*) (b:*) (f:a -> b) (xs:List a). foldr a (List b) (\(x:a) (r:List b). cons b (f x) r) (nil b) xs;
+let append : forall (a:*). List a -> List a -> List a = \(a:*) (xs:List a) (ys:List a). foldr a (List a) (cons a) ys xs;
+let reverse : forall (a:*). List a -> List a = \(a:*) (xs:List a). foldl a (List a) (\(r:List a) (x:a). cons a x r) (nil a) xs;
+
+-- type level equality, system Fω
+let Eql : * -> * -> * = \(a:*) (b:*). forall c:*->*. c a -> c b;
+let refl : forall a:*. Eql a a = \(a:*) (ϕ:* -> *). \x:ϕ a. x;
+let symm : forall (a:*) (b:*). Eql a b -> Eql b a = \(a:*) (b:*) (e:forall ϕ:* -> *. ϕ a -> ϕ b). e (\y:*. Eql y a) (refl a);
+let trans : forall (a:*) (b:*) (c:*). Eql a b -> Eql b c -> Eql a c = \(a:*) (b:*) (c:*) (ab:Eql a b) (bc:Eql b c). bc (Eql a) ab;
+let lift : forall  (a:*) (b:*) (ϕ:* -> *). Eql a b -> Eql (ϕ a) (ϕ b) = \(a:*) (b:*) (ϕ:* -> *) (e: Eql a b). e (\y:*. Eql (ϕ a) (ϕ y)) (refl (ϕ a));
+
+let some_list : List Nat = append Nat (cons Nat five (cons Nat five (nil Nat))) (cons Nat zero (nil Nat));
 
 let ten      : Nat = add five five;
 let hundred  : Nat = mul ten ten;
@@ -60,7 +91,7 @@ let ttt' : (Bool -> Natural) -> (Bool -> Natural) = \y. \x. y x;
 --         ?4 : A -> B -- Substituted λ x. b
 --         ?5 : B -> A -- Substituted λ x. a
 -- "
--- ghci> xx = get_n_unif 39 ctx (Uc (get_const_def_partial ctx "left", get_const_def_partial ctx "right"))
+-- ghci> xx = get_n_unif 39 ctx (Uc (get_const_def_partial ctx "lc", get_const_def_partial ctx "rc"))
 -- TODO:works, but first 39 seem similar and 40/ident loops
 -- -> clarify whether success leaves have to be different substitutions
 const A : *;
@@ -71,20 +102,20 @@ const b : B;
 const h : C -> C;
 free 1 : A -> C; -- F
 free 2 : B -> C; -- G
-let left : C = hundred C h (?1 a);
-let right : C = hundred C h (?2 b);
+let lc : C = hundred C h (?1 a);
+let rc : C = hundred C h (?2 b);
 
 -- example 1
 free 3 : C;
-let left' : C = ?3;
-let right' : C = h ?3;
+let lc' : C = ?3;
+let rc' : C = h ?3;
 
 -- iter example from Bentkamp:
 -- F (\x. x) (f a) = F f a
 free 4 : (A -> A) -> A -> A;
 const f'' : A -> A;
-let left'' : A = ?4 (\x. x) (f'' a);
-let right'' : A = ?4 f'' a;
+let lc'' : A = ?4 (\x. x) (f'' a);
+let rc'' : A = ?4 f'' a;
 -- mit unifier F |-> \u v. u v
 -- Iteration: F |-> \u v. H u v (u (G u v))
 -- Elimination: H |-> \x y z. H' z
