@@ -187,25 +187,3 @@ is_fluid_tm :: Term -> Bool
 is_fluid_tm (t :@ _) | Free _ <- get_hotm_head t = True
 is_fluid_tm (ALam _ _ b) = has_hotm_freevars b
 is_fluid_tm _ = False
-
--- future improvement with η-long stable TO: here is how it could look like on values
--- currently we can't do this because we need to eta reduce before encoding,
--- which only seems to be possible on terms.
--- this fn is similar to strip_abstr, abe_conv, quote
--- important: the debruijn levels in these intermediate values are actually indices.
--- go :: Lvl -> Value -> Value
--- go l (VLam _ b) = o_lam `value_app` (go (l + 1) (b $ VBound l))
--- go l (VPi _ a b) = o_pi `value_app` a `value_app` (go (l + 1) (b $ VBound l))
--- go l (VFlex m sp) = VFlex m $ fmap (go (l + 1)) sp
--- go l (VRigid (Left x) sp) = VRigid (Left . coerce $ lvl2idx l x) $ fmap (go (l + 1)) sp
--- go l (VRigid (Right n) sp) = VRigid (Right n) $ fmap (go (l + 1)) sp
--- go _ v = v
-
--- TODO: optimized, single traversal
-tkbo :: VarBal -> Integer -> FOFTerm -> FOFTerm -> (VarBal, Integer, PartialOrd)
--- tkbo vb wb (FOFMeta x) (FOFMeta y) = (inc_vb x $ dec_vb y vb, wb, if x == y then Just EQ else Nothing)
-tkbo _ _ _ _ = undefined
-
-inc_vb, dec_vb :: Metavar -> VarBal -> VarBal
-inc_vb m = Map.insertWith (+) m 1
-dec_vb m = Map.insertWith (+) m -1
