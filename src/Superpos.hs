@@ -240,6 +240,30 @@ varcond (VFree _ _) _ t'sig | VLam _ _ _ <- t'sig = True
 varcond (VFree _ _) _ _ = False
 varcond _ _ _ = True
 
+-- TODO: not sure yet how to handle the csu computation, need to understand main loop first
+csu_select :: Stream Substitution -> Substitution
+csu_select = head . toList
+
+-- TODO: partial, does not handle dependent types (the original calculus does not have them)
+--   likely needs an infinite stream of possible ty t' results in the pi case
+fluid_head_ty :: Value -> Value -> Value
+fluid_head_ty u t' = VPi "" (non_pi_ty t') (ty u)
+  where
+    non_pi_ty :: Value -> Value
+    non_pi_ty (VFlex _ _ a) = a
+    non_pi_ty (VRigid _ _ a) = a
+    non_pi_ty (VLam _ a _) = a
+    non_pi_ty (VPi _ _ _) = error "TODO"
+    non_pi_ty (VSort Star) = VSort Box
+    non_pi_ty (VSort Box) = error "broken invariant"
+    ty :: Value -> Value -> Value
+    ty (VFlex _ _ a) = const a
+    ty (VRigid _ _ a) = const a
+    ty (VLam _ a _) = const a
+    ty (VPi _ _ b) = b
+    ty (VSort Star) = const $ VSort Box
+    ty (VSort Box) = error "broken invariant"
+
 sup_rule :: ElabCtx -> Clause -> Literal -> Clause -> Literal -> (Position, Value) -> Maybe Clause
 sup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
   | applies =
@@ -249,8 +273,7 @@ sup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
     d = Cl $ (t :≈ t') : d'
     not_deep_occ_var (VFree m _) = not $ occurs_deeply ctx m c
     not_deep_occ_var _ = True
-    -- TODO: not sure where to do the csu computation, need to understand main loop first
-    sig = undefined $ csu ctx $ Uc (t, u)
+    sig = csu_select $ csu ctx $ Uc (t, u)
     ss'sig = apply_subst sig <$> ss'
     (tsig, t'sig) = (apply_subst sig t, apply_subst sig t')
     res = case ss' of
@@ -287,14 +310,12 @@ fluidsup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
     deep_occ_var (VFree m _) = occurs_deeply ctx m c
     deep_occ_var _ = False
     zm = fresh_meta ctx.metactx
-    -- TODO: compute the type, this needs something like compute_ty(typeof(u), typeof(t'))
-    zty = undefined
+    zty = fluid_head_ty u t'
     z = VFree zm zty
     ctx' = ctx{metactx = update_subst ctx.metactx zm (zty, Fresh Fluidsup)}
     -- TODO: where to force? also in 4. this is nonsense. we force with va, then force again (apply_subst)...
     va = value_app ctx'.metactx
-    -- TODO: csu computation
-    sig = undefined $ csu ctx $ Uc (z `va` t, u)
+    sig = csu_select $ csu ctx $ Uc (z `va` t, u)
     ss'sig = apply_subst sig <$> ss'
     (tsig, t'sig) = (apply_subst sig t, apply_subst sig t')
     res = case ss' of
@@ -322,8 +343,7 @@ eres_rule :: ElabCtx -> Clause -> Literal -> Maybe Clause
 eres_rule ctx (Cl c') (u :≉ u') | applies = Just $ subst_clause sig (Cl c')
   where
     c = Cl $ (u :≉ u') : c'
-    -- TODO: csu computation
-    sig = undefined $ csu ctx $ Uc (u, u')
+    sig = csu_select $ csu ctx $ Uc (u, u')
     applies = eligible False (apply_subst sig <$> (u :≉ u')) sig c
 eres_rule _ _ _ = Nothing
 
@@ -333,8 +353,7 @@ efact_rule ctx (Cl c') (u' :≈ v') (u :≈ v)
       Just $ subst_clause sig $ Cl $ res <> c'
   where
     c = Cl $ (u' :≈ v') : (u :≈ v) : c'
-    -- TODO: csu computation
-    sig = undefined $ csu ctx $ Uc (u, u')
+    sig = csu_select $ csu ctx $ Uc (u, u')
     (usig, vsig) = (apply_subst sig u, apply_subst sig v)
     res = [v :≉ v', u :≈ v']
     applies =

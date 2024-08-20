@@ -24,7 +24,7 @@ uf_trace ctx ss x =
 
 newtype Stream a = Stream [a]
   deriving (GHC.Exts.IsList) via [a]
-  deriving (Functor) via []
+  deriving (Functor, Foldable) via []
 deriving via [a] instance Show a => Show (Stream a)
 
 -- not lawful, doesn't matter
