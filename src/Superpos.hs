@@ -13,13 +13,11 @@ import Elab
 import Order
 import Unif
 
-data Literal' a = Pos (a, a) | Neg (a, a)
-  deriving (Functor)
+lfst, lsnd :: Literal' a -> a
 lfst (Pos (x, _)) = x
 lfst (Neg (x, _)) = x
 lsnd (Pos (_, y)) = y
 lsnd (Neg (_, y)) = y
-type Literal = Literal' Value
 pattern a :≉ b = Neg (a, b)
 pattern a :≈ b = Pos (a, b)
 infix 4 :≉
@@ -37,12 +35,8 @@ eq_lit sig l r = case (l, r) of
     cmp = abe_conv sig
 
 show_lit :: ElabCtx -> Literal -> String
-show_lit ctx (Pos (l, r)) = show_val ctx l <> "≈" <> show_val ctx r
-show_lit ctx (Neg (l, r)) = show_val ctx l <> "≉" <> show_val ctx r
-
--- plain lists are fine here, since clause sets are commonly not large
--- duplicates should be deleted
-newtype Clause = Cl [Literal]
+show_lit ctx (Pos (l, r)) = show_val ctx l <> " ≈ " <> show_val ctx r
+show_lit ctx (Neg (l, r)) = show_val ctx l <> " ≉ " <> show_val ctx r
 
 map_clause :: (Literal -> Literal) -> Clause -> Clause
 map_clause f (Cl cl) = Cl $ f `map` cl
@@ -51,8 +45,8 @@ show_cl :: ElabCtx -> Clause -> String
 show_cl _ (Cl []) = "⊥"
 show_cl ctx (Cl cs) = List.intercalate " ∨ " (show_lit ctx <$> cs)
 
--- we use plain lists for now, although it's quite inefficient
-type Formset = [Clause]
+show_formset :: ElabCtx -> Formset -> String
+show_formset ctx = List.intercalate " ∧ " . fmap (show_cl ctx)
 
 bool_prelude :: ElabCtx
 bool_prelude =

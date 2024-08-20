@@ -34,6 +34,10 @@ parens = between (symbol "(") (symbol ")")
 semi :: Parser String
 semi = symbol ";"
 
+land, lor :: Parser String
+land = symbol "∧" <|> symbol "AND"
+lor = symbol "∨" <|> symbol "OR"
+
 p_arr :: Parser String
 p_arr = symbol "→" <|> symbol "->"
 
@@ -43,7 +47,7 @@ ident_chars c = isLowerCase c || isUpperCase c || c `elem` special_chars
     special_chars :: [Char] = ['_', '\'', '∀', '∃']
 
 reserved_keywords :: [String]
-reserved_keywords = ["let", "const", "free", "forall", "λ", "_lam", "_pi", "_sort"]
+reserved_keywords = ["let", "const", "free", "forall", "λ", "_lam", "_pi", "_sort", "formula"]
 
 p_ident :: Parser Name
 p_ident = do
@@ -124,8 +128,20 @@ p_arr_or_apps = do
     Nothing -> pure sp
     Just _ -> RPi "" sp <$> p_raw
 
+p_formula :: Parser Raw
+p_formula = do
+  symbol "formula"
+  cs <- parens (p_lit `sepBy` lor) `sepBy` land
+  pure $ RForm cs
+  where
+    p_lit = do
+      lhs <- p_raw
+      op <- (symbol "=" *> pure True) <|> (symbol "≠" *> pure False)
+      rhs <- p_raw
+      pure $ if op then Pos (lhs, rhs) else Neg (lhs, rhs)
+
 p_raw :: Parser Raw
-p_raw = with_pos $ choice ([p_let, p_clet, p_flet, try p_alam, p_lam, p_pi, p_arr_or_apps] :: [Parser Raw])
+p_raw = with_pos $ choice ([p_formula, p_let, p_clet, p_flet, try p_alam, p_lam, p_pi, p_arr_or_apps] :: [Parser Raw])
 
 p_src :: Parser [Raw]
 p_src = whitespace *> p_raw `sepEndBy` semi <* eof

@@ -27,11 +27,14 @@ data Raw
   | RALam Name Raw Raw
   | RPi Name Raw Raw
   | RStar
-  | RLet Name Raw Raw -- RLet x:a = t
-  | RCLet Name Raw -- RCLet x:a
-  | RFLet Metavar Raw -- RFLet x:a
   | RFree Metavar -- ?f
+  | RLet Name Raw Raw -- let x:a = t
+  | RCLet Name Raw -- const x:a
+  | RFLet Metavar Raw -- free x:a
   | RSrcPos SourcePos Raw -- for error reporting
+  -- formula
+  --   (x = y) ∧ (y ≠ z ∨ z = \(t:Bool).t);
+  | RForm [[Literal' Raw]]
   deriving (Show)
 
 newtype Name = Name String deriving (Semigroup, Show, Monoid, Ord, Eq, IsString) via String
@@ -81,6 +84,10 @@ pattern VConst x a = VRigid (Right x) [] a
 pattern VFree :: Metavar -> Value -> Value
 pattern VFree m a = VFlex m [] a
 
+data Literal' a = Pos (a, a) | Neg (a, a)
+  deriving (Traversable, Foldable, Functor, Show)
+type Literal = Literal' Value
+
 data EmergedFrom = Elim | Ident | Dummy | Skolem | User | Fluidsup | Other
   deriving (Show, Eq)
 data MetaStatus = Substituted Value | Fresh EmergedFrom
@@ -101,7 +108,15 @@ data ElabCtx = ElabCtx
   , metactx :: Substitution
   , dbg_unif :: (Integer, String)
   , srcpos :: SourcePos
+  , problem :: Maybe Formset
   }
+
+-- plain lists are fine, since clause sets are commonly not large
+-- duplicates should be deleted
+newtype Clause = Cl [Literal]
+
+-- we use plain lists here too for now, although it's quite inefficient
+type Formset = [Clause]
 
 newtype Ctx a = Ctx [(Name, a)]
   deriving (IsList, Semigroup, Monoid, Show) via [(Name, a)]
@@ -125,9 +140,6 @@ lookup_ctx_idx (Ctx r) key = go 0 r
     go i ((s, x) : sxs)
       | key == s = pure $ (i, x)
       | otherwise = go (i + 1) sxs
-
-lvl2idx :: Lvl -> Lvl -> Idx
-lvl2idx (Lvl l) (Lvl x) = Idx $ l - x - 1
 
 -- needed in pretty printing and η-reduction
 free_in :: Idx -> Term -> Bool

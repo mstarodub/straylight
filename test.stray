@@ -1,7 +1,5 @@
-let id : forall (A : *). A -> A
-      = λA x. x;
-let cnst : forall (A : *) (B:*). A -> B -> A
-      = \A B x y. x;
+let id : forall (A : *). A -> A = λA x. x;
+let cnst : forall (A : *) (B:*). A -> B -> A = \A B x y. x;
 
 const Bool : *;
 const t : Bool;
@@ -129,3 +127,6 @@ let j' : Nat = add ten five;
 
 -- const Bool : *;
 -- const Natural : *;
+
+formula
+    (?4 (\x. x) (f'' a) = ?4 f'' a);

@@ -107,6 +107,10 @@ get_arity _ = 0
 dummy_conv_val_unsafe :: Value
 dummy_conv_val_unsafe = VBound (-1) (VSort Box)
 
+-- lvl_max = idx + lvl + 1 ⟺ idx = lvl_max - lvl - 1
+lvl2idx :: Lvl -> Lvl -> Idx
+lvl2idx (Lvl l) (Lvl x) = Idx $ l - x - 1
+
 -- force a thunk after a substitution up to hnf. cannot pattern match on values otherwise
 -- TODO: during forcing and in eval - do we delete the substituted meta from the ctx and return a new one?
 force :: Substitution -> Value -> Value
@@ -221,7 +225,7 @@ tc_trace2 ss =
   trace ("TRACE2 " <> unwords ss) $ () `seq` pure ()
 
 mk_ctx :: SourcePos -> [Raw] -> Tc ElabCtx
-mk_ctx pos = build_ctx (ElabCtx [] [] 0 [] id_subst (0, "") pos)
+mk_ctx pos = build_ctx (ElabCtx [] [] 0 [] id_subst (0, "") pos Nothing)
 
 grow_ctx :: SourcePos -> ElabCtx -> [Raw] -> Tc ElabCtx
 grow_ctx pos ctx = build_ctx ctx{srcpos = pos}
@@ -255,6 +259,14 @@ build_ctx ct (RFLet m rty : rw) = do
   let vty = eval ct . fst $ tmty
   let ct' = define_free ct (m, vty)
   build_ctx ct' rw
+build_ctx ct (RForm f : []) = do
+  tfd <- traverse (traverse (traverse tf)) f
+  pure ct{problem = Just $ fmap Cl tfd}
+  where
+    tf :: Raw -> Tc Value
+    tf x = do
+      (tm, _) <- infer ct x
+      pure $ eval ct tm
 build_ctx ct (_ : _) = report ct "invalid toplevel"
 
 empty_ctx :: ElabCtx
