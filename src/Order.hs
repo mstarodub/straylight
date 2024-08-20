@@ -187,3 +187,35 @@ is_fluid_tm :: Term -> Bool
 is_fluid_tm (t :@ _) | Free _ <- get_hotm_head t = True
 is_fluid_tm (ALam _ _ b) = has_hotm_freevars b
 is_fluid_tm _ = False
+
+-- canonical order on literals, taken from duper (A. Bentkamp)
+cmp_lits :: Literal Value -> Literal Value -> PartialOrd
+cmp_lits lit1 lit2 = do
+  l1l2 <- ckbo (lfst lit1) (lfst lit2)
+  l1r2 <- ckbo (lfst lit1) (lsnd lit2)
+  r1l2 <- ckbo (lsnd lit1) (lfst lit2)
+  r1r2 <- ckbo (lsnd lit1) (lsnd lit2)
+  pure $ case (l1l2, l1r2, r1l2, r1r2, sign lit1 lit2) of
+    (GT, GT, _, _, _) -> GT
+    (_, _, GT, GT, _) -> GT
+    (LT, _, LT, _, _) -> LT
+    (_, LT, _, LT, _) -> LT
+    (GT, _, _, GT, _) -> GT
+    (LT, _, _, LT, _) -> LT
+    (_, GT, GT, _, _) -> GT
+    (_, LT, LT, _, _) -> LT
+    (EQ, _, _, c, EQ) -> c
+    (_, EQ, c, _, EQ) -> c
+    (_, c, EQ, _, EQ) -> c
+    (c, _, _, EQ, EQ) -> c
+    (EQ, _, _, EQ, _) -> EQ
+    (_, EQ, EQ, _, _) -> EQ
+    (EQ, _, _, _, c) -> c
+    (_, EQ, _, _, c) -> c
+    (_, _, EQ, _, c) -> c
+    (_, _, _, EQ, c) -> c
+  where
+    sign (Pos _) (Pos _) = EQ
+    sign (Neg _) (Neg _) = EQ
+    sign (Neg _) (Pos _) = GT
+    sign (Pos _) (Neg _) = LT

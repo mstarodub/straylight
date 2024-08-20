@@ -34,7 +34,7 @@ data Raw
   | RSrcPos SourcePos Raw -- for error reporting
   -- formula
   --   (x = y) ∧ (y ≠ z ∨ z = \(t:Bool).t);
-  | RForm [[Literal' Raw]]
+  | RForm [[Literal Raw]]
   deriving (Show)
 
 newtype Name = Name String deriving (Semigroup, Show, Monoid, Ord, Eq, IsString) via String
@@ -84,10 +84,6 @@ pattern VConst x a = VRigid (Right x) [] a
 pattern VFree :: Metavar -> Value -> Value
 pattern VFree m a = VFlex m [] a
 
-data Literal' a = Pos (a, a) | Neg (a, a)
-  deriving (Traversable, Foldable, Functor, Show)
-type Literal = Literal' Value
-
 data EmergedFrom = Elim | Ident | Dummy | Skolem | User | Fluidsup | Other
   deriving (Show, Eq)
 data MetaStatus = Substituted Value | Fresh EmergedFrom
@@ -111,9 +107,18 @@ data ElabCtx = ElabCtx
   , problem :: Maybe Formset
   }
 
+data Literal a = Pos (a, a) | Neg (a, a)
+  deriving (Traversable, Foldable, Functor, Show)
+
+lfst, lsnd :: Literal a -> a
+lfst (Pos (x, _)) = x
+lfst (Neg (x, _)) = x
+lsnd (Pos (_, y)) = y
+lsnd (Neg (_, y)) = y
+
 -- plain lists are fine, since clause sets are commonly not large
 -- duplicates should be deleted
-newtype Clause = Cl [Literal]
+newtype Clause = Cl [Literal Value]
 
 -- we use plain lists here too for now, although it's quite inefficient
 type Formset = [Clause]

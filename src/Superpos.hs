@@ -13,11 +13,6 @@ import Elab
 import Order
 import Unif
 
-lfst, lsnd :: Literal' a -> a
-lfst (Pos (x, _)) = x
-lfst (Neg (x, _)) = x
-lsnd (Pos (_, y)) = y
-lsnd (Neg (_, y)) = y
 pattern a :≉ b = Neg (a, b)
 pattern a :≈ b = Pos (a, b)
 infix 4 :≉
@@ -25,7 +20,7 @@ infix 4 :≈
 {-# COMPLETE (:≉), (:≈) #-}
 
 -- unoriented equality for literals
-eq_lit :: Substitution -> Literal -> Literal -> Bool
+eq_lit :: Substitution -> Literal Value -> Literal Value -> Bool
 eq_lit sig l r = case (l, r) of
   (Pos l', Pos r') -> go l' r'
   (Neg l', Neg r') -> go l' r'
@@ -34,11 +29,11 @@ eq_lit sig l r = case (l, r) of
     (c1, c2) `go` (d1, d2) = c1 `cmp` d1 && c2 `cmp` d2 || c1 `cmp` d2 && c2 `cmp` d1
     cmp = abe_conv sig
 
-show_lit :: ElabCtx -> Literal -> String
+show_lit :: ElabCtx -> Literal Value -> String
 show_lit ctx (Pos (l, r)) = show_val ctx l <> " ≈ " <> show_val ctx r
 show_lit ctx (Neg (l, r)) = show_val ctx l <> " ≉ " <> show_val ctx r
 
-map_clause :: (Literal -> Literal) -> Clause -> Clause
+map_clause :: (Literal Value -> Literal Value) -> Clause -> Clause
 map_clause f (Cl cl) = Cl $ f `map` cl
 
 show_cl :: ElabCtx -> Clause -> String
@@ -162,44 +157,12 @@ is_fluid_val (VLam _ _ b) = has_val_freevars (b dummy_conv_val_unsafe)
     has_val_freevars (VSort _) = False
 is_fluid_val _ = False
 
--- TODO: explain this
-cmp_lits :: Literal -> Literal -> PartialOrd
-cmp_lits lit1 lit2 = do
-  l1l2 <- ckbo (lfst lit1) (lfst lit2)
-  l1r2 <- ckbo (lfst lit1) (lsnd lit2)
-  r1l2 <- ckbo (lsnd lit1) (lfst lit2)
-  r1r2 <- ckbo (lsnd lit1) (lsnd lit2)
-  pure $ case (l1l2, l1r2, r1l2, r1r2, sign lit1 lit2) of
-    (GT, GT, _, _, _) -> GT
-    (_, _, GT, GT, _) -> GT
-    (LT, _, LT, _, _) -> LT
-    (_, LT, _, LT, _) -> LT
-    (GT, _, _, GT, _) -> GT
-    (LT, _, _, LT, _) -> LT
-    (_, GT, GT, _, _) -> GT
-    (_, LT, LT, _, _) -> LT
-    (EQ, _, _, c, EQ) -> c
-    (_, EQ, c, _, EQ) -> c
-    (_, c, EQ, _, EQ) -> c
-    (c, _, _, EQ, EQ) -> c
-    (EQ, _, _, EQ, _) -> EQ
-    (_, EQ, EQ, _, _) -> EQ
-    (EQ, _, _, _, c) -> c
-    (_, EQ, _, _, c) -> c
-    (_, _, EQ, _, c) -> c
-    (_, _, _, EQ, c) -> c
-  where
-    sign (Pos _) (Pos _) = EQ
-    sign (Neg _) (Neg _) = EQ
-    sign (Neg _) (Pos _) = GT
-    sign (Pos _) (Neg _) = LT
-
 -- TODO: sig ≡ id ⟹ "we leave it implicit"?
 -- our clauses are deduplicated, but maximal ⇏ strictly maximal because there might be more than
 -- one element equal according to the order
 -- TODO: example / when is this the case?
 -- precondition: substitution already applied (lsig)
-eligible :: Bool -> Literal -> Substitution -> Clause -> Bool
+eligible :: Bool -> Literal Value -> Substitution -> Clause -> Bool
 eligible strictly lsig sig cl = all maximal clcompared
   where
     maximal = flip (elem @[]) $ [Just GT, Nothing] <> if strictly then [] else [Just EQ]
@@ -212,7 +175,7 @@ subst_clause sig cl = map_clause (fmap $ apply_subst sig) cl
 occurs_deeply :: ElabCtx -> Metavar -> Clause -> Bool
 occurs_deeply ctx m (Cl cl) = any go cl
   where
-    go :: Literal -> Bool
+    go :: Literal Value -> Bool
     go l =
       occ_lam False (quote ctx $ lfst l)
         || occ_lam False (quote ctx $ lsnd l)
@@ -264,7 +227,7 @@ fluid_head_ty u t' = VPi "" (non_pi_ty t') (ty u)
     ty (VSort Star) = const $ VSort Box
     ty (VSort Box) = error "broken invariant"
 
-sup_rule :: ElabCtx -> Clause -> Literal -> Clause -> Literal -> (Position, Value) -> Maybe Clause
+sup_rule :: ElabCtx -> Clause -> Literal Value -> Clause -> Literal Value -> (Position, Value) -> Maybe Clause
 sup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
   | applies =
       Just $ subst_clause sig $ Cl $ res : d' <> c'
@@ -300,7 +263,14 @@ sup_rule _ _ _ _ _ _ = Nothing
 
 -- TODO: it seems the rules apply the σ ∈ csu substitution greedily. so we don't really need
 --   to return an ElabCtx, a fresh counter capability would suffice
-fluidsup_rule :: ElabCtx -> Clause -> Literal -> Clause -> Literal -> (Position, Value) -> Maybe (Clause, ElabCtx)
+fluidsup_rule ::
+  ElabCtx
+  -> Clause
+  -> Literal Value
+  -> Clause
+  -> Literal Value
+  -> (Position, Value)
+  -> Maybe (Clause, ElabCtx)
 fluidsup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
   | applies =
       Just (subst_clause sig $ Cl $ res : d' <> c', ctx')
@@ -339,7 +309,7 @@ fluidsup_rule ctx (Cl d') (t :≈ t') (Cl c') ss' (upos, u)
           Neg _ -> eligible False ss'sig sig c
 fluidsup_rule _ _ _ _ _ _ = Nothing
 
-eres_rule :: ElabCtx -> Clause -> Literal -> Maybe Clause
+eres_rule :: ElabCtx -> Clause -> Literal Value -> Maybe Clause
 eres_rule ctx (Cl c') (u :≉ u') | applies = Just $ subst_clause sig (Cl c')
   where
     c = Cl $ (u :≉ u') : c'
@@ -347,7 +317,7 @@ eres_rule ctx (Cl c') (u :≉ u') | applies = Just $ subst_clause sig (Cl c')
     applies = eligible False (apply_subst sig <$> (u :≉ u')) sig c
 eres_rule _ _ _ = Nothing
 
-efact_rule :: ElabCtx -> Clause -> Literal -> Literal -> Maybe Clause
+efact_rule :: ElabCtx -> Clause -> Literal Value -> Literal Value -> Maybe Clause
 efact_rule ctx (Cl c') (u' :≈ v') (u :≈ v)
   | applies =
       Just $ subst_clause sig $ Cl $ res <> c'
