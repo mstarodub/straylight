@@ -313,7 +313,6 @@ infer ctx (RALam s ty body) = do
   pure (ALam s tmty tmb, VPi s tmv retty)
 infer ctx e = report ctx $ "unable to infer type for " <> show e
 
--- the context is just for pretty printing
 check :: ElabCtx -> Raw -> Value -> Tc Term
 check ctx (RSrcPos pos r) v = check ctx{srcpos = pos} r v
 check ctx (RLam s body) (VPi _ vt vf) = do
