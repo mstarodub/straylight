@@ -46,15 +46,13 @@ instance Monoid (Stream a) where
 -- a flex iff a free variable, rigid otherwise (∈ Constants ∪ {x₁, ..., xₙ})
 -- invariant: both sides have the same type
 
--- TODO: we use non-syntactic value equality/abe_conv in several places during unification:
--- 1. in bind operations to check type equality (fine until we have dependent types...)?
--- 2. for the delete transition. there, it seems fine to delete eagerly, since all that does is skip norm_a / decompose
--- 3. for the unification constraints: syntactically equal values, which is what we actually want there:
---   have to normalize to the same thing
---   but syntactically nonequal values that are repeatedly reduced to hnf only normalize to the same thing
---   when a larger metacontext is used for conversion (which is never the case)
-
--- TODO: we use assertions for some things we think are invariants of algoritm (n > 0 / β equal in some arg)
+-- we use non-syntactic value equality/abe_conv in several places during unification:
+-- 1. in bind operations to check type equality (which seems fine, until we have dependent types)
+-- 2. for the delete transition. there, we can delete eagerly, since all that does is skip norm_a / decompose
+-- 3. for the unification constraints. syntactically equal values, which is what the paper uses...
+--   ...have to normalize to the same thing
+--   ...but syntactically nonequal values that are repeatedly reduced to hnf only normalize to the same thing
+--      when a larger metacontext is used for conversion (which is never the case)
 
 newtype UnifConstraint = Uc (Value, Value)
 
@@ -82,10 +80,7 @@ type NodeState = (UnifConstraints, ElabCtx)
 get_n_unif :: Int -> ElabCtx -> UnifConstraint -> [Substitution]
 get_n_unif n ctx uc = let Stream ufs = csu ctx uc in take n ufs
 
--- CSU(t1, t2) === set of unifiers for t1, t2 U. ∀o unifier of t1, t2. ∃u∈U, substitution s. o ⊆ u
--- TODO: problem with this definition. why s needed here? can trivially pick s = o, then U = {id}
--- unifier: substitution s that makes terms t1, t2 abe-equiv: s t1 ↔(abe) s t2
--- MGU = one element CSU
+-- complete set of unifiers
 csu :: ElabCtx -> UnifConstraint -> Stream Substitution
 csu ctx uc = extr_substs . unify $ [Right (Ucs [uc], ctx)]
   where
@@ -367,7 +362,7 @@ is_fun_ty :: Value -> Bool
 is_fun_ty (VPi _ _ _) = True
 is_fun_ty _ = False
 
--- TODO: is broken
+-- TODO: possibly broken, seems to take a very long time
 -- TODO: JP, page 14: regard types deltas as variables themselves, as they behave like "dummies". is this really ok?
 iter_bind :: (Value -> Bool) -> ElabCtx -> Metavar -> Stream ElabCtx
 iter_bind prop ctx f =
@@ -419,7 +414,7 @@ construct_arr_val l r = VPi "" l (const r)
 -- [VFlex 1 (fromList []),VFlex 1 (fromList []),VPi "" (VFlex 1 (fromList [])) <function>,VSort □,VPi "N" (VSort □) <function>,VPi "N" (VSort □) <function>]
 -- ghci> get_const_ty_partial ctx "add'"
 -- VPi "" (VPi "N" (VSort □) <function>) <function>
--- TODO: what about parametric polymorphism, does the fact that "everything is fully applied" gurantee this is ok?
+-- TODO: what about parametric polymorphism?
 destruct_arr_val :: Value -> [Value]
 destruct_arr_val (VPi _ l r) = l : destruct_arr_val (r $ dummy_conv_val_unsafe)
 destruct_arr_val v = [v]
