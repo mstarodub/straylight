@@ -2,7 +2,6 @@ module Elab where
 
 import Control.Monad
 import Control.Monad.Except
-import Data.Bifunctor
 import Data.Either
 import qualified Data.IntMap as IntMap
 import qualified Data.List as List
@@ -277,11 +276,14 @@ ctx_fromraw = runTC_partial . mk_ctx (initialPos "input")
 
 infer :: ElabCtx -> Raw -> Tc (Term, Value)
 infer ctx (RSrcPos pos r) = infer ctx{srcpos = pos} r
--- try toplvl and tenv, since the var could be bound or a const
 infer ctx (RVar s) =
-  (first Bound <$> liftEither (lookup_ctx_idx ctx.tenv s))
-    `catchError` const ((Const s,) . snd <$> liftEither (lookup_ctx ctx.toplvl s))
-    `catchError` report ctx
+  -- the name could refer to a bound variable...
+  case lookup_ctx_idx ctx.tenv s of
+    Right (i, vty) -> pure (Bound i, vty)
+    Left _ -> case lookup_ctx ctx.toplvl s of
+      Left e -> report ctx e
+      -- ...or a constant
+      Right (_, vty) -> pure (Const s, vty)
 infer ctx (RFree m) = do
   vty <- liftEither (get_free_ty ctx m) `catchError` report ctx
   pure (Free m, vty)
@@ -300,7 +302,6 @@ infer ctx (RPi s t1 t2) = do
   (tm2, s2) <- infer ctx' t2
   check_rule ctx (s1, s2)
   pure (Pi s tm1 tm2, s2)
-infer _ RStar = pure (Sort Star, VSort Box)
 infer ctx (RALam s ty body) = do
   tc_trace ["infer: ralam", show (RALam s ty body)]
   (tmty, _) <- infer ctx ty
@@ -311,6 +312,7 @@ infer ctx (RALam s ty body) = do
   let rettyc = quote ctx{lvl = ctx.lvl + 1} tyb
   let retty = \v -> eval (extend_lenv ctx v) rettyc
   pure (ALam s tmty tmb, VPi s tmv retty)
+infer _ RStar = pure (Sort Star, VSort Box)
 infer ctx e = report ctx $ "unable to infer type for " <> show e
 
 check :: ElabCtx -> Raw -> Value -> Tc Term
