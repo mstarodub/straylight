@@ -120,6 +120,13 @@ let rc'' : A = ?4 f'' a;
 -- Decompose
 -- Huet proj: G |-> \u v. v
 
+-- f X ?= G a
+-- mgu: X ↦ H a, G ↦ λu. f (H u)
+free 5 : A; --X
+free 6 : A -> A; --G
+let lc''' : A = f'' ?5;
+let rc''' : A = ?6 a;
+
 -- encoding check (O(j) should just be f)
 const h' : C -> C;
 let j : C -> C = λx. h' x;

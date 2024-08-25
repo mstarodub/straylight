@@ -8,6 +8,8 @@ import Data.Foldable
 import qualified Data.List as List
 import Data.Maybe
 import Data.Semigroup
+import Data.Sequence (Seq (..))
+import qualified Data.Sequence as Seq
 import Debug.Trace
 import qualified GHC.Exts (IsList)
 
@@ -138,7 +140,7 @@ transition (Ucs e, ctx) c =
               bind =
                 fmap
                   (\ct -> Right (Ucs (Uc (s, t) : e), ct))
-                  (param (dbg_incdepth ctx) (Uc (s, t)))
+                  (param ctx{dbg_unif = second (const "bind") (dbg_incdepth ctx).dbg_unif} (Uc (s, t)))
             in
               let Stream decomp_bind = decomp <> bind
               in -- param can potentially return an empty list, like in λx.x ?= λx.F : (Bool → Nat) → (Bool → Nat)
@@ -237,11 +239,11 @@ modif_metactx m mty replacee dbg_lastbind ctx =
 --   but that requires merging this with gen_apps and more thought
 -- construct nabs lambda abstractions around a spine of applications body_1 ... body_n base
 -- TODO: the "x" is just for debug printing
-mk_lam :: ElabCtx -> Term -> [Term] -> [Value] -> Term
+mk_lam :: Foldable t => ElabCtx -> Term -> [Term] -> t Value -> Term
 mk_lam ctx base body ntys = foldl (\b ty -> ALam "x" (quote ctx ty) b) (foldl (:@) base body) ntys
 
 -- construct the type tys_1 -> ... -> tys_n -> base
-mk_pi :: Value -> [Value] -> Value
+mk_pi :: Foldable t => Value -> t Value -> Value
 mk_pi base tys = foldr construct_arr_val base tys
 
 -- in most of the bind rules we want to generate a spine of the shape [(F₁ x₁ ... xₙ), ..., (Fₘ x₁ ... xₙ)],
@@ -278,14 +280,15 @@ ident_bind ctx f g =
     (f_ty, g_ty) = (get_free_ty_partial ctx f, get_free_ty_partial ctx g)
     f_tys = destruct_arr_val f_ty
     g_tys = destruct_arr_val g_ty
-    (f_alphas, g_gammas) = assert (abe_conv ctx.metactx (last f_tys) (last g_tys)) $ (init f_tys, init g_tys)
-    beta = last f_tys
+    f_alphas ::|> beta1 = f_tys
+    g_gammas ::|> beta2 = g_tys
+    beta = assert (abe_conv ctx.metactx beta1 beta2) beta1
     n = length f_alphas
     m = length g_gammas
     xns = fmap (Bound . Idx) ([n - 1, n - 2 .. 0] :: [Int])
     yms = fmap (Bound . Idx) ([m - 1, m - 2 .. 0] :: [Int])
-    gen_fi_apps = gen_apps m (\i -> mk_pi (g_gammas !! i) f_alphas) n
-    gen_gj_apps = gen_apps n (\j -> mk_pi (f_alphas !! j) g_gammas) m
+    gen_fi_apps = gen_apps m (\i -> mk_pi (g_gammas `Seq.index` i) f_alphas) n
+    gen_gj_apps = gen_apps n (\j -> mk_pi (f_alphas `Seq.index` j) g_gammas) m
 
 -- modify f (free) to Substituted v, where v is the constructed lambda
 -- return the new context in which f has been substituted
@@ -299,11 +302,14 @@ imit_bind ctx f g =
     (f_ty, g_ty) = (get_free_ty_partial ctx f, get_const_ty_partial ctx g)
     f_tys = destruct_arr_val f_ty
     g_tys = destruct_arr_val g_ty
-    (f_alphas, g_gammas) = assert (abe_conv ctx.metactx (last f_tys) (last g_tys)) (init f_tys, init g_tys)
-    n = length f_alphas
+    f_alphas ::|> beta1 = f_tys
+    g_gammas ::|> beta2 = g_tys
+    -- this is a bit ugly
+    n = assert (abe_conv ctx.metactx beta1 beta2) $ length f_alphas
     m = length g_gammas
-    gen_fi_apps = gen_apps m (\i -> mk_pi (g_gammas !! i) f_alphas) n
+    gen_fi_apps = gen_apps m (\i -> mk_pi (g_gammas `Seq.index` i) f_alphas) n
 
+-- n = 0 ⟹ no subseqences
 elim_bind :: ElabCtx -> Metavar -> Stream ElabCtx
 elim_bind ctx f =
   uf_trace ctx ["bind elim"] $
@@ -311,8 +317,7 @@ elim_bind ctx f =
   where
     f_ty = get_free_ty_partial ctx f
     f_tys = destruct_arr_val f_ty
-    f_alphas = assert (not . null . init $ f_tys) $ init f_tys
-    beta = last f_tys
+    f_alphas ::|> beta = f_tys
     n = length f_alphas
     modif_for_subseq :: [Int] -> ElabCtx
     modif_for_subseq subs = modif_metactx f f_ty f_replaceby "elim" newctx
@@ -322,31 +327,31 @@ elim_bind ctx f =
         (g, newctx) =
           let
             mg = fresh_meta ctx.metactx
-            gty = foldr construct_arr_val beta (fmap (f_alphas !!) subs)
+            gty = foldr construct_arr_val beta (fmap (Seq.index f_alphas) subs)
           in
             (Free mg, ctx{metactx = update_subst ctx.metactx mg (gty, Fresh Elim)})
 
+-- n = 0 ⟹ no selection occurs
 huet_jp_bind :: (Value -> Bool) -> ElabCtx -> Metavar -> Stream ElabCtx
-huet_jp_bind prop ctx f = Stream . catMaybes $ fmap modif_for_selected (zip [0 ..] (filter prop f_alphas))
+huet_jp_bind prop ctx f = Stream . catMaybes $ fmap modif_for_selected (zip [0 ..] (filter prop (toList f_alphas)))
   where
     f_ty = get_free_ty_partial ctx f
     f_tys = destruct_arr_val f_ty
-    f_alphas = assert (not . null . init $ f_tys) $ init f_tys
-    beta = last f_tys
+    f_alphas ::|> beta1 = f_tys
     n = length f_alphas
     modif_for_selected :: (Int, Value) -> Maybe ElabCtx
     modif_for_selected (ai_idx, ai) =
-      if abe_conv ctx.metactx beta (last a_tys)
-        then Just (modif_metactx f f_ty f_replaceby "huet/jp" newctx)
+      if abe_conv ctx.metactx beta1 beta2
+        then Just (modif_metactx f f_ty f_replaceby ("huet/jp " <> show f) newctx)
         else Nothing
       where
         f_replaceby = mk_lam ctx xi fi_apps f_alphas
         xi = Bound . Idx $ n - 1 - ai_idx
         (fi_apps, newctx) = runState gen_fi_apps ctx
         a_tys = destruct_arr_val ai
-        a_gammas = init a_tys
+        a_gammas ::|> beta2 = a_tys
         m = length a_gammas
-        gen_fi_apps = gen_apps m (\i -> mk_pi (a_gammas !! i) f_alphas) n
+        gen_fi_apps = gen_apps m (\i -> mk_pi (a_gammas `Seq.index` i) f_alphas) n
 
 huet_bind :: ElabCtx -> Metavar -> Stream ElabCtx
 huet_bind ctx f =
@@ -355,7 +360,7 @@ huet_bind ctx f =
 
 jp_bind :: ElabCtx -> Metavar -> Stream ElabCtx
 jp_bind ctx f =
-  uf_trace ctx ["bind jp"] $
+  uf_trace ctx ["bind jp", show f] $
     huet_jp_bind (not . is_fun_ty) ctx f
 
 is_fun_ty :: Value -> Bool
@@ -367,17 +372,18 @@ is_fun_ty _ = False
 iter_bind :: (Value -> Bool) -> ElabCtx -> Metavar -> Stream ElabCtx
 iter_bind prop ctx f =
   uf_trace ctx ["bind iter"] $
-    sconcat (fmap modif_for_d_abstractions [0 ..])
+    sconcat (fmap modif_for_d_abstractions possible)
   where
+    f_ty = get_free_ty_partial ctx f
+    f_tys = destruct_arr_val f_ty
+    f_alphas ::|> beta1 = f_tys
+    n = length f_alphas
+    xns = fmap (Bound . Idx) ([n - 1, n - 2 .. 0] :: [Int])
+    -- TODO: perhaps selection, then iteration is better?
+    possible = if n == 0 then [] else [0 ..]
     modif_for_d_abstractions :: Int -> Stream ElabCtx
-    modif_for_d_abstractions d = Stream $ fmap modif_for_selected (zip [0 ..] (filter prop f_alphas))
+    modif_for_d_abstractions d = Stream $ fmap modif_for_selected (zip [0 ..] (filter prop (toList f_alphas)))
       where
-        f_ty = get_free_ty_partial ctx f
-        f_tys = destruct_arr_val f_ty
-        f_alphas = assert (not . null . init $ f_tys) $ init f_tys
-        beta1 = last f_tys
-        n = length f_alphas
-        xns = fmap (Bound . Idx) ([n - 1, n - 2 .. 0] :: [Int])
         (deltas, ctx') = runState (gen_deltas d) ctx
         gen_deltas :: Int -> State ElabCtx [Value]
         gen_deltas j = replicateM j $ do
@@ -394,8 +400,7 @@ iter_bind prop ctx f =
             iter_lam_gis = mk_lam ctx' xi gi_apps deltas
             xi = Bound . Idx $ n - 1 - ai_idx
             a_tys = destruct_arr_val ai
-            a_gammas = init a_tys
-            beta2 = last a_tys
+            a_gammas ::|> beta2 = a_tys
             m = length a_gammas
             (h, ctx'') =
               let
@@ -404,7 +409,16 @@ iter_bind prop ctx f =
                 hty = foldr construct_arr_val beta1 (f_alphas <> [deltas_to_b2])
               in
                 (Free mh, ctx'{metactx = update_subst ctx'.metactx mh (hty, Fresh Other)})
-            gen_gj_apps = gen_apps m (\j -> mk_pi (a_gammas !! j) (f_alphas <> deltas)) (n + d)
+            gen_gj_apps = gen_apps m (\j -> mk_pi (a_gammas `Seq.index` j) (toList f_alphas <> deltas)) (n + d)
+
+-- incomplete pattern synonym to extract the parameter types + result type
+-- this is to silence the warning
+pattern (::|>) :: Seq Value -> Value -> Seq Value
+pattern nt ::|> l = nt :|> l
+{-# COMPLETE (::|>) #-}
+
+ngezero :: [a] -> Bool
+ngezero = not . null . init
 
 construct_arr_val :: Value -> Value -> Value
 construct_arr_val l r = VPi "" l (const r)
@@ -415,6 +429,6 @@ construct_arr_val l r = VPi "" l (const r)
 -- ghci> get_const_ty_partial ctx "add'"
 -- VPi "" (VPi "N" (VSort □) <function>) <function>
 -- TODO: what about parametric polymorphism?
-destruct_arr_val :: Value -> [Value]
-destruct_arr_val (VPi _ l r) = l : destruct_arr_val (r $ dummy_conv_val_unsafe)
+destruct_arr_val :: Value -> Seq Value
+destruct_arr_val (VPi _ l r) = l :<| destruct_arr_val (r $ dummy_conv_val_unsafe)
 destruct_arr_val v = [v]

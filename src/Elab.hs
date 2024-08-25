@@ -387,20 +387,25 @@ instance Show ElabCtx where
               <> show_val ctx vty
               <> " = "
               <> show_val ctx val
-      pp_substitutions :: ElabCtx -> Substitution -> String
-      pp_substitutions ct =
-        IntMap.foldMapWithKey
-          \key (val, status) ->
-            "\t?"
-              <> show key
-              <> " : "
-              <> show_val ct val
-              <> " -- "
-              <> pp_metastatus ct status
-              <> "\n"
-      pp_metastatus :: ElabCtx -> MetaStatus -> String
-      pp_metastatus _ (Fresh from) = show from
-      pp_metastatus ct (Substituted v) = "Substituted " <> show_val ct v
+pp_substitutions :: ElabCtx -> Substitution -> String
+pp_substitutions ct sig =
+  -- TODO: temporary fix because we're forcing stuff during show_val, which calls quote
+  let ct' = ct{metactx = sig}
+  in flip
+      IntMap.foldMapWithKey
+      sig
+      \key (val, status) ->
+        "\t?"
+          <> show key
+          <> " : "
+          <> show_val ct' val
+          <> " -- "
+          <> pp_metastatus ct' status
+          <> "\n"
+
+pp_metastatus :: ElabCtx -> MetaStatus -> String
+pp_metastatus _ (Fresh from) = show from
+pp_metastatus ct (Substituted v) = "Substituted " <> show_val ct v
 
 append_parse_tc_toplvl :: String -> ElabCtx -> String -> ElabCtx
 append_parse_tc_toplvl filename ctx contents =
