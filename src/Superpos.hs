@@ -145,7 +145,7 @@ green_replace _ _ _ = error "broken invariant"
 
 -- same overapproximation as in the term order
 is_fluid_val :: Value -> Bool
-is_fluid_val (VFlex _ _ _) = True
+is_fluid_val (VFlex _ sp _) = not $ Seq.null sp
 is_fluid_val (VLam _ _ b) = has_val_freevars (b dummy_conv_val_unsafe)
   where
     -- TODO: again, the nested types of lambdas found in the body are also scanned. is that correct?
