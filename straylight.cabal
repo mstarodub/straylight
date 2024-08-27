@@ -1,6 +1,6 @@
 cabal-version: 3.8
 name:          straylight
-version:       0.0.1
+version:       0.1.0
 author:        Maxim Starodub
 
 common ghc-settings
